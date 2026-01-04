@@ -23,7 +23,7 @@ client = NetPulseClient(
     api_key="your-api-key",                     # [必需] API 密钥
     timeout=30,                                 # [可选] HTTP 请求超时时间（秒），默认 30
     driver="netmiko",                           # [可选] 默认驱动，默认 "netmiko"
-    default_connection_args={},                 # [可选] 默认连接参数
+    default_connection_args={},                 # [可选] SDK 特有：默认连接参数，会与方法中的 connection_args 合并
     pool_connections=10,                        # [可选] 连接池数量，默认 10
     pool_maxsize=200,                           # [可选] 每个连接池最大连接数，默认 200（大规模批量可调整到 500）
     max_retries=3,                              # [可选] HTTP 请求自动重试次数，默认 3
@@ -38,7 +38,7 @@ client = NetPulseClient(
 | `api_key` | `str` | ✅ | - | API 密钥，从 NetPulse 管理界面获取 |
 | `timeout` | `int` | ❌ | `30` | HTTP 请求超时时间（秒） |
 | `driver` | `str` | ❌ | `"netmiko"` | 默认驱动：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
-| `default_connection_args` | `dict` | ❌ | `{}` | 默认连接参数（用户名、密码等），参见第 3 节 |
+| `default_connection_args` | `dict` | ❌ | `{}` | **SDK 特有参数**：默认连接参数（用户名、密码等），会与方法中的 `connection_args` 合并，方法参数优先级更高，参见第 3 节 |
 | `pool_connections` | `int` | ❌ | `10` | HTTP 连接池数量 |
 | `pool_maxsize` | `int` | ❌ | `200` | 每个连接池的最大连接数 |
 | `max_retries` | `int` | ❌ | `3` | HTTP 请求失败自动重试次数 |
@@ -95,10 +95,10 @@ job = client.collect(
 | `config` | `str` / `list` | ✅* | - | 配置命令（与 commands 互斥） |
 | `mode` | `str` | ❌ | `"auto"` | 执行模式：`auto`（自动选择）、`exec`（单设备）、`bulk`（批量） |
 | `timeout` | `int` | ❌ | `300` | 任务超时时间（秒），对应 API 的 `ttl` 参数 |
-| `connection_args` | `dict` | ❌ | `{}` | 连接参数，覆盖 `default_connection_args` |
+| `connection_args` | `dict` | ❌ | `{}` | 连接参数，会与客户端的 `default_connection_args` 合并（方法参数优先级更高）。如果使用 `credential`，建议不在此处提供 `username` 和 `password` |
 | `driver` | `str` | ❌ | 客户端默认 | 驱动名称，覆盖客户端默认驱动 |
 | `driver_args` | `dict` | ❌ | `None` | 驱动特定参数，详见第 4 节 |
-| `credential` | `dict` | ❌ | `None` | Vault 凭据引用，详见第 6 节 |
+| `credential` | `dict` | ❌ | `None` | Vault 凭据引用（从外部凭据管理系统获取认证信息），详见第 6 节。**注意**：如果同时提供 `credential` 和 `connection_args` 中的密码，`credential` 会优先生效 |
 | `rendering` | `dict` | ❌ | `None` | 模板渲染配置，详见第 7 节 |
 | `parsing` | `dict` | ❌ | `None` | 输出解析配置，详见第 8 节 |
 | `queue_strategy` | `str` | ❌ | `None` | 队列策略：`fifo`（先进先出）、`pinned`（固定 Worker） |
@@ -248,6 +248,8 @@ driver_args = {
 
 ## 5. devices 设备列表格式
 
+`devices` 参数支持多种格式，可以是单个设备或设备列表，也支持列表生成式、生成器等可迭代对象。
+
 ### 5.1 基本格式
 
 ```python
@@ -269,6 +271,12 @@ devices = [
     {"host": "10.1.1.1"},
     {"host": "10.1.1.2"},
 ]
+
+# 格式5：列表生成式（动态生成设备列表）
+devices = [f"10.1.1.{i}" for i in range(1, 255)]  # 生成 10.1.1.1 到 10.1.1.254
+
+# 格式6：任何可迭代对象（生成器、迭代器等）
+devices = (f"10.154.254.{i}" for i in range(1, 117))  # 生成器表达式
 ```
 
 ### 5.2 每设备不同参数
@@ -336,31 +344,75 @@ devices = [
 
 ## 6. credential 凭据配置
 
-从 Vault 获取凭据（需要配置 Vault 集成）
+从 Vault 获取凭据（需要配置 Vault 集成）。`credential` 是一个独立的认证来源，与 `connection_args` 中的密码是**不同的层级**。
+
+### 6.1 参数说明
 
 ```python
 credential = {
-    "name": "network-devices",      # [可选] 凭据名称
-    "ref": "secret/data/network",   # [可选] Vault 路径
-    "mount": "kv",                  # [可选] Vault 挂载点
-    "field_mapping": {              # [可选] 字段映射
-        "username": "user",
-        "password": "pass",
+    "name": "vault_kv",             # [可选] 后端配置的凭据提供者名称（provider name）
+    "ref": "secret/data/network",   # [必需] Vault 密钥路径
+    "mount": "kv",                  # [可选] Vault 挂载点，默认 "kv" 或后端配置的默认值
+    "field_mapping": {              # [可选] 字段映射（仅当 Vault 中的字段名与标准不同时需要）
+        "username": "user",         # 将 Vault 中的 "user" 映射为 "username"
+        "password": "pass",         # 将 Vault 中的 "pass" 映射为 "password"
     },
 }
 ```
 
-示例：
+### 6.2 参数优先级
+
+**重要**：如果同时提供 `credential` 和 `connection_args` 中的 `username`/`password`，**`credential` 会优先生效**，`connection_args` 中的认证信息会被覆盖。
+
+**推荐做法**：使用 `credential` 时，在 `connection_args` 中**不要**提供 `username` 和 `password`，只提供其他连接参数（如 `device_type`、`port` 等）。
+
+### 6.3 使用示例
+
 ```python
+# 示例1：基本用法（Vault 中的字段名为标准名称）
 job = client.collect(
     devices="10.1.1.1",
     commands="show version",
+    connection_args={
+        "device_type": "cisco_ios",  # 只提供非认证参数
+        # 不提供 username 和 password
+    },
     credential={
-        "ref": "secret/data/network/cisco",
-        "field_mapping": {
+        "ref": "secret/data/network/cisco",  # Vault 路径
+        "mount": "kv",  # 可选，默认 "kv"
+    },
+)
+
+# 示例2：字段映射（Vault 中的字段名不同）
+job = client.collect(
+    devices="10.1.1.1",
+    commands="show version",
+    connection_args={
+        "device_type": "hp_comware",
+    },
+    credential={
+        "name": "vault_kv",  # 后端 provider 名称
+        "ref": "netpulse/ops",  # Vault 路径
+        "mount": "kv",
+        "field_mapping": {  # 仅当字段名不同时需要
             "username": "cisco_user",
             "password": "cisco_pass",
         },
+    },
+)
+
+# 示例3：不推荐 - 同时提供 credential 和 connection_args 中的密码
+# credential 会覆盖 connection_args 中的认证信息
+job = client.collect(
+    devices="10.1.1.1",
+    commands="show version",
+    connection_args={
+        "device_type": "cisco_ios",
+        "username": "admin",  # 会被 credential 覆盖
+        "password": "oldpass",  # 会被 credential 覆盖
+    },
+    credential={
+        "ref": "secret/data/network/cisco",  # 这个会生效
     },
 )
 ```
@@ -516,8 +568,12 @@ job = client.collect(
 job = client.collect(
     devices="10.1.1.1",
     commands="show version",
+    connection_args={
+        "device_type": "cisco_ios",  # 只提供非认证参数
+    },
     credential={
         "ref": "secret/data/network/cisco",
+        "mount": "kv",  # 可选
     },
 )
 ```
@@ -531,6 +587,18 @@ job = client.collect(
     webhook={
         "url": "https://api.example.com/notify",
     },
+)
+```
+
+### 示例7：列表生成式生成设备列表
+
+```python
+# 动态生成设备 IP 列表
+devices = [f"10.1.1.{i}" for i in range(1, 255)]
+
+job = client.collect(
+    devices=devices,
+    commands="show version",
 )
 ```
 

@@ -11,7 +11,7 @@ from .utils import setup_logging
 # 保持向后兼容，导出为 NetPulse
 NetPulse = NetPulseClient
 
-__version__ = "0.1.0"
+__version__ = "netpulse-sdk"
 
 __all__ = [
     "NetPulse",

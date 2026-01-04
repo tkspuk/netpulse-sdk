@@ -57,7 +57,7 @@ class JobInterface(ABC):
         pass
 
     @abstractmethod
-    def stream(self, poll_interval: float = 2) -> Iterator[Result]:
+    def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
         """Stream results"""
         pass
 
@@ -276,7 +276,7 @@ class Job(JobInterface):
         retryable_types = {"timeout", "network", "connection"}
         return error_type.lower() in retryable_types
 
-    def stream(self, poll_interval: float = 2) -> Iterator[Result]:
+    def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
         """Stream results
 
         Single job stream waits for completion then returns all results
@@ -454,7 +454,7 @@ class JobGroup(JobInterface):
             all_results.extend(job.results())
         return all_results
 
-    def stream(self, poll_interval: float = 2) -> Iterator[Result]:
+    def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
         """Stream results
 
         Implementation:
@@ -487,9 +487,8 @@ class JobGroup(JobInterface):
         return all(job.is_done() for job in self.jobs)
 
     def __iter__(self) -> Iterator[Result]:
-        """Support direct iteration, auto-wait and return all results"""
-        self.wait()
-        return iter(self.results())
+        """Support direct iteration, auto-stream for batch jobs"""
+        return self.stream()
 
     def __getitem__(self, device_name: str) -> List[Result]:
         """Support dictionary access by device name

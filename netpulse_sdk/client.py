@@ -336,6 +336,36 @@ class NetPulseClient:
         succeeded = data.get("succeeded", [])
         failed = data.get("failed", [])
 
+        # Retry failed devices once if some succeeded
+        if failed and succeeded:
+            log.info(f"Retrying {len(failed)} failed devices: {failed}")
+
+            # Extract failed device hosts
+            failed_hosts = set()
+            for item in failed:
+                if isinstance(item, str):
+                    failed_hosts.add(item)
+                elif isinstance(item, dict):
+                    failed_hosts.add(item.get("host") or item.get("device", ""))
+
+            # Find devices to retry
+            retry_devices = [d for d in normalized_devices if d.get("host") in failed_hosts]
+
+            if retry_devices:
+                retry_payload = {**payload, "devices": retry_devices}
+                retry_resp = self._http.post("/device/bulk", json=retry_payload)
+                retry_data = retry_resp.get("data", {})
+                retry_succeeded = retry_data.get("succeeded", [])
+                retry_failed = retry_data.get("failed", [])
+
+                if retry_succeeded:
+                    succeeded.extend(retry_succeeded)
+                    log.info(f"Retry succeeded for {len(retry_succeeded)} devices")
+
+                failed = retry_failed
+                if failed:
+                    log.warning(f"Still failed after retry: {failed}")
+
         if failed:
             log.debug(f"Bulk API response - succeeded: {len(succeeded)}, failed: {failed}")
             if succeeded:
