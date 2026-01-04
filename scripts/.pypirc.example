@@ -1,0 +1,25 @@
+# PyPI 凭证配置示例文件
+# 
+# 使用方法：
+# 1. 复制此文件到 ~/.pypirc
+# 2. 替换 YOUR-API-TOKEN 为你的实际 API Token
+# 3. 设置文件权限：chmod 600 ~/.pypirc
+#
+# 获取 API Token：
+# - PyPI: https://pypi.org/manage/account/token/
+# - TestPyPI: https://test.pypi.org/manage/account/token/
+
+[distutils]
+index-servers =
+    pypi
+    testpypi
+
+[pypi]
+username = __token__
+password = pypi-YOUR-API-TOKEN
+
+[testpypi]
+repository = https://test.pypi.org/legacy/
+username = __token__
+password = pypi-YOUR-TEST-API-TOKEN
+

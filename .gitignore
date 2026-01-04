@@ -1,0 +1,62 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+env/
+.venv/
+
+# Python logs
+*.log
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Byte-compiled / temporary files
+*.pyc
+*.pyo
+*.pyd
+*.DS_Store
+
+# Test / coverage
+.coverage
+htmlcov/
+*.cover
+*.pytest_cache/
+.pytest_cache/
+.tox/
+.nox/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Example output or temporary files
+examples/__pycache__/
+examples/*.log
+
+# NetPulse SDK specific (if any runtime cache/logs)
+*.cache
+*.tmp
+netpulse_sdk.egg-info
+
+
+# examples
+examples/
+tests/
+.ruff_cache/
+scripts/pypi
+.pypirc
