@@ -50,11 +50,15 @@ class NetPulseClient:
         config = load_config(config_path=config_path, profile=profile)
 
         # Priority: explicit param > config file > environment variable
-        base_url = base_url or get_config_value(config, "base_url") or os.environ.get("NETPULSE_URL")
-        api_key = api_key or get_config_value(config, "api_key") or os.environ.get("NETPULSE_API_KEY")
+        base_url = (
+            base_url or get_config_value(config, "base_url") or os.environ.get("NETPULSE_URL")
+        )
+        api_key = (
+            api_key or get_config_value(config, "api_key") or os.environ.get("NETPULSE_API_KEY")
+        )
         timeout = timeout if timeout != 30 else get_config_value(config, "timeout", 30)
         driver = driver if driver != "netmiko" else get_config_value(config, "driver", "netmiko")
-        
+
         # Merge connection args: config file < explicit param
         config_conn_args = get_config_value(config, "connection_args", {})
         if default_connection_args:
@@ -62,9 +66,17 @@ class NetPulseClient:
         default_connection_args = config_conn_args
 
         # Pool settings from config
-        pool_connections = pool_connections if pool_connections != 10 else get_config_value(config, "pool_connections", 10)
-        pool_maxsize = pool_maxsize if pool_maxsize != 200 else get_config_value(config, "pool_maxsize", 200)
-        max_retries = max_retries if max_retries != 3 else get_config_value(config, "max_retries", 3)
+        pool_connections = (
+            pool_connections
+            if pool_connections != 10
+            else get_config_value(config, "pool_connections", 10)
+        )
+        pool_maxsize = (
+            pool_maxsize if pool_maxsize != 200 else get_config_value(config, "pool_maxsize", 200)
+        )
+        max_retries = (
+            max_retries if max_retries != 3 else get_config_value(config, "max_retries", 3)
+        )
 
         # Improved error messages
         if not base_url:
@@ -543,7 +555,6 @@ class NetPulseClient:
             if value is not None:
                 payload[key] = value
         return payload
-
 
     def _call_exec_api(
         self,

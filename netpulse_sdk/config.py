@@ -28,7 +28,7 @@ CONFIG_PATHS = [
 def _substitute_env_vars(value: Any) -> Any:
     """Substitute ${VAR_NAME} with environment variable values"""
     if isinstance(value, str):
-        pattern = r'\$\{([^}]+)\}'
+        pattern = r"\$\{([^}]+)\}"
         matches = re.findall(pattern, value)
         for var_name in matches:
             env_value = os.environ.get(var_name, "")
@@ -96,14 +96,14 @@ def load_config(
 
     # Get profile config
     profile_name = profile or "default"
-    
+
     # Merge default + profile
     config = {}
-    
+
     # First load 'default' profile
     if "default" in raw_config:
         config.update(raw_config["default"])
-    
+
     # Then overlay specific profile if different from default
     if profile_name != "default" and "profiles" in raw_config:
         if profile_name in raw_config["profiles"]:

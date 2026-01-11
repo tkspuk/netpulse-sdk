@@ -27,16 +27,15 @@ client = NetPulseClient(
 # Collect device information
 job = client.collect(
     devices=["10.1.1.1", "10.1.1.2"],
-    commands=["show version"],
+    command="show version",
 )
 
 # Process results
 for result in job:
     if result.ok:
-        # print line in 50
-        print(f"{result.device_name}: {result.stdout[:50]}...")
+        print(f"{result.device_name}: {result.output[:50]}...")
     else:
-        print(f"{result.device_name}: {result.error.message}")
+        print(f"{result.device_name}: {result.output}")
 ```
 
 ## Features

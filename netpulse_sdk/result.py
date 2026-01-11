@@ -33,7 +33,7 @@ class ConnectionTestResult(BaseModel):
 
     def __repr__(self):
         status = "OK" if self.success else "FAILED"
-        latency_str = f" {self.latency*1000:.1f}ms" if self.latency else ""
+        latency_str = f" {self.latency * 1000:.1f}ms" if self.latency else ""
         return f"ConnectionTestResult({self.host} [{status}]{latency_str})"
 
 
@@ -143,15 +143,17 @@ class Result(BaseModel):
             "stderr": self.stderr,
             "ok": self.ok,
             "duration_ms": self.duration_ms,
-            "error": {"type": self.error.type, "message": self.error.message} if self.error else None,
+            "error": {"type": self.error.type, "message": self.error.message}
+            if self.error
+            else None,
         }
 
     def to_json(self) -> str:
         """Convert to JSON string"""
         import json
+
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
 
     def __repr__(self):
         status = "OK" if self.ok else "FAILED"
         return f"Result({self.device_name}:{self.command} [{status}])"
-
