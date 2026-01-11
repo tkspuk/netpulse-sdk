@@ -17,6 +17,12 @@ log = logging.getLogger(__name__)
 class NetPulseClient:
     """NetPulse SDK client"""
 
+    DEFAULT_DRIVER_ARGS = {
+        "read_timeout": 60,
+        "delay_factor": 3,
+        "max_loops": 5000,
+    }
+
     def __init__(
         self,
         base_url: Optional[str] = None,
@@ -245,14 +251,14 @@ class NetPulseClient:
         """
         devices = [devices] if isinstance(devices, str) else devices
 
-        if command and config:
+        if command is not None and config is not None:
             raise ValueError("command and config are mutually exclusive")
-        if not command and not config:
+        if command is None and config is None:
             raise ValueError("Either command or config must be specified")
 
-        operation = command if command else config
+        operation = command if command is not None else config
         operation = [operation] if isinstance(operation, str) else operation
-        operation_type = "command" if command else "config"
+        operation_type = "command" if command is not None else "config"
 
         if not devices:
             raise ValueError("devices cannot be empty")
@@ -260,6 +266,9 @@ class NetPulseClient:
         conn_args = {**self.default_connection_args}
         if connection_args:
             conn_args.update(connection_args)
+
+        if driver_args is None:
+            driver_args = self.DEFAULT_DRIVER_ARGS
 
         api_mode = self._select_api(devices, mode)
         use_driver = driver or self.driver
