@@ -8,6 +8,7 @@ from typing import List, Literal, Optional, Union
 
 from .error import NetPulseError
 from .job import Job, JobGroup
+from .result import ConnectionTestResult
 from .transport import HTTPClient
 
 log = logging.getLogger(__name__)
