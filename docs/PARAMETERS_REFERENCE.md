@@ -10,6 +10,8 @@
 - [7. rendering 模板渲染](#7-rendering-模板渲染)
 - [8. parsing 输出解析](#8-parsing-输出解析)
 - [9. webhook 回调配置](#9-webhook-回调配置)
+- [10. Result 对象](#10-result-对象)
+- [11. Job 对象](#11-job-对象)
 
 ---
 
@@ -18,30 +20,48 @@
 ```python
 from netpulse_sdk import NetPulseClient
 
+# 方式1: 显式传参
 client = NetPulseClient(
-    base_url="http://localhost:9000",           # [必需] API 服务地址
-    api_key="your-api-key",                     # [必需] API 密钥
-    timeout=30,                                 # [可选] HTTP 请求超时时间（秒），默认 30
+    base_url="http://localhost:9000",           # [必需*] API 服务地址
+    api_key="your-api-key",                     # [必需*] API 密钥
+    timeout=30,                                 # [可选] HTTP 请求超时（秒），默认 30
     driver="netmiko",                           # [可选] 默认驱动，默认 "netmiko"
-    default_connection_args={},                 # [可选] SDK 特有：默认连接参数，会与方法中的 connection_args 合并
+    default_connection_args={},                 # [可选] 默认连接参数
     pool_connections=10,                        # [可选] 连接池数量，默认 10
-    pool_maxsize=200,                           # [可选] 每个连接池最大连接数，默认 200（大规模批量可调整到 500）
-    max_retries=3,                              # [可选] HTTP 请求自动重试次数，默认 3
+    pool_maxsize=200,                           # [可选] 最大连接数，默认 200
+    max_retries=3,                              # [可选] 自动重试次数，默认 3
 )
+
+# 方式2: 环境变量（自动读取 NETPULSE_URL, NETPULSE_API_KEY）
+client = NetPulseClient(driver="netmiko", default_connection_args={...})
+
+# 方式3: Context Manager（自动关闭连接）
+with NetPulseClient() as client:
+    client.ping()  # 健康检查
+    ...
 ```
 
 ### 参数说明
 
 | 参数 | 类型 | 必需 | 默认值 | 说明 |
 |------|------|------|--------|------|
-| `base_url` | `str` | ✅ | - | NetPulse API 服务地址，如 `http://localhost:9000` |
-| `api_key` | `str` | ✅ | - | API 密钥，从 NetPulse 管理界面获取 |
-| `timeout` | `int` | ❌ | `30` | HTTP 请求超时时间（秒） |
-| `driver` | `str` | ❌ | `"netmiko"` | 默认驱动：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
-| `default_connection_args` | `dict` | ❌ | `{}` | **SDK 特有参数**：默认连接参数（用户名、密码等），会与方法中的 `connection_args` 合并，方法参数优先级更高，参见第 3 节 |
+| `base_url` | `str` | ✅* | 环境变量 | API 地址，可从 `NETPULSE_URL` 读取 |
+| `api_key` | `str` | ✅* | 环境变量 | API 密钥，可从 `NETPULSE_API_KEY` 读取 |
+| `timeout` | `int` | ❌ | `30` | HTTP 请求超时（秒） |
+| `driver` | `str` | ❌ | `"netmiko"` | 驱动：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
+| `default_connection_args` | `dict` | ❌ | `{}` | 默认连接参数，详见第 3 节 |
 | `pool_connections` | `int` | ❌ | `10` | HTTP 连接池数量 |
-| `pool_maxsize` | `int` | ❌ | `200` | 每个连接池的最大连接数 |
+| `pool_maxsize` | `int` | ❌ | `200` | 每池最大连接数（大批量可调至 500） |
 | `max_retries` | `int` | ❌ | `3` | HTTP 请求失败自动重试次数 |
+
+### 客户端方法
+
+| 方法 | 说明 |
+|------|------|
+| `ping()` | 健康检查，返回 `True` 或抛出异常 |
+| `close()` | 关闭 HTTP 连接池 |
+| `run(...)` | 执行命令/配置，详见 2.1 |
+| `collect(...)` | 只读查询，详见 2.2 |
 
 ---
 
@@ -52,10 +72,10 @@ client = NetPulseClient(
 ```python
 job = client.run(
     devices=["10.1.1.1", "10.1.1.2"],           # [必需] 设备列表
-    commands=["show version"],                  # [可选] 查询命令（与 config 互斥）
-    config=["hostname ROUTER-01"],              # [可选] 配置命令（与 commands 互斥）
+    command=["show version"],                   # [可选] 查询命令（与 config 互斥）
+    config=["hostname ROUTER-01"],              # [可选] 配置命令（与 command 互斥）
     mode="auto",                                # [可选] 执行模式：auto/exec/bulk
-    timeout=300,                                # [可选] 任务超时时间（秒）
+    ttl=300,                                    # [可选] 任务超时时间（秒）
     connection_args={},                         # [可选] 连接参数（覆盖默认值）
     driver="netmiko",                           # [可选] 驱动名称（覆盖默认值）
     driver_args={},                             # [可选] 驱动特定参数
@@ -63,7 +83,7 @@ job = client.run(
     rendering={},                               # [可选] 模板渲染配置
     parsing={},                                 # [可选] 输出解析配置
     queue_strategy="fifo",                      # [可选] 队列策略：fifo/pinned
-    result_ttl=3600,                            # [可选] 结果保留时间（秒）
+    result_ttl=3600,                            # [可选] 结果保留时间（秒，60-604800）
     webhook={},                                 # [可选] Webhook 回调配置
 )
 ```
@@ -73,15 +93,15 @@ job = client.run(
 ```python
 job = client.collect(
     devices=["10.1.1.1"],                       # [必需] 设备列表
-    commands=["show version"],                  # [必需] 查询命令
-    timeout=300,                                # [可选] 任务超时时间（秒）
+    command=["show version"],                   # [必需] 查询命令
+    ttl=300,                                    # [可选] 任务超时时间（秒）
     connection_args={},                         # [可选] 连接参数
     driver="netmiko",                           # [可选] 驱动名称
     driver_args={},                             # [可选] 驱动特定参数
     credential={},                              # [可选] Vault 凭据引用
     parsing={},                                 # [可选] 输出解析配置
     queue_strategy="fifo",                      # [可选] 队列策略
-    result_ttl=3600,                            # [可选] 结果保留时间（秒）
+    result_ttl=3600,                            # [可选] 结果保留时间（秒，60-604800）
     webhook={},                                 # [可选] Webhook 回调配置
 )
 ```
@@ -91,18 +111,18 @@ job = client.collect(
 | 参数 | 类型 | 必需 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `devices` | `str` / `list` | ✅ | - | 设备列表，详见第 5 节 |
-| `commands` | `str` / `list` | ✅* | - | 查询命令（与 config 互斥） |
-| `config` | `str` / `list` | ✅* | - | 配置命令（与 commands 互斥） |
+| `command` | `str` / `list` | ✅* | - | 查询命令（与 config 互斥） |
+| `config` | `str` / `list` | ✅* | - | 配置命令（与 command 互斥） |
 | `mode` | `str` | ❌ | `"auto"` | 执行模式：`auto`（自动选择）、`exec`（单设备）、`bulk`（批量） |
-| `timeout` | `int` | ❌ | `300` | 任务超时时间（秒），对应 API 的 `ttl` 参数 |
+| `ttl` | `int` | ❌ | `300` | 任务超时时间（秒） |
 | `connection_args` | `dict` | ❌ | `{}` | 连接参数，会与客户端的 `default_connection_args` 合并（方法参数优先级更高）。如果使用 `credential`，建议不在此处提供 `username` 和 `password` |
-| `driver` | `str` | ❌ | 客户端默认 | 驱动名称，覆盖客户端默认驱动 |
+| `driver` | `str` | ❌ | 客户端默认 | 驱动名称，覆盖客户端默认驱动。支持：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
 | `driver_args` | `dict` | ❌ | `None` | 驱动特定参数，详见第 4 节 |
-| `credential` | `dict` | ❌ | `None` | Vault 凭据引用（从外部凭据管理系统获取认证信息），详见第 6 节。**注意**：如果同时提供 `credential` 和 `connection_args` 中的密码，`credential` 会优先生效 |
+| `credential` | `dict` | ❌ | `None` | Vault 凭据引用（从外部凭据管理系统获取认证信息），详见第 6 节。**注意**：`name` 字段是必需的 |
 | `rendering` | `dict` | ❌ | `None` | 模板渲染配置，详见第 7 节 |
 | `parsing` | `dict` | ❌ | `None` | 输出解析配置，详见第 8 节 |
 | `queue_strategy` | `str` | ❌ | `None` | 队列策略：`fifo`（先进先出）、`pinned`（固定 Worker） |
-| `result_ttl` | `int` | ❌ | `None` | 结果保留时间（秒） |
+| `result_ttl` | `int` | ❌ | `None` | 结果保留时间（秒），范围 60-604800（最长 7 天） |
 | `webhook` | `dict` | ❌ | `None` | Webhook 回调配置，详见第 9 节 |
 
 ---
@@ -309,7 +329,7 @@ devices = [
 
 job = client.collect(
     devices=devices,
-    commands="show version",  # base 命令
+    command="show version",  # base 命令
 )
 ```
 
@@ -350,9 +370,11 @@ devices = [
 
 ```python
 credential = {
-    "name": "vault_kv",             # [可选] 后端配置的凭据提供者名称（provider name）
+    "name": "vault_kv",             # [必需] 后端配置的凭据提供者名称（provider name）
     "ref": "secret/data/network",   # [必需] Vault 密钥路径
     "mount": "kv",                  # [可选] Vault 挂载点，默认 "kv" 或后端配置的默认值
+    "version": 1,                   # [可选] 版本号（用于版本化存储）
+    "namespace": "ops",             # [可选] 命名空间或租户范围
     "field_mapping": {              # [可选] 字段映射（仅当 Vault 中的字段名与标准不同时需要）
         "username": "user",         # 将 Vault 中的 "user" 映射为 "username"
         "password": "pass",         # 将 Vault 中的 "pass" 映射为 "password"
@@ -372,7 +394,7 @@ credential = {
 # 示例1：基本用法（Vault 中的字段名为标准名称）
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     connection_args={
         "device_type": "cisco_ios",  # 只提供非认证参数
         # 不提供 username 和 password
@@ -386,7 +408,7 @@ job = client.collect(
 # 示例2：字段映射（Vault 中的字段名不同）
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     connection_args={
         "device_type": "hp_comware",
     },
@@ -405,7 +427,7 @@ job = client.collect(
 # credential 会覆盖 connection_args 中的认证信息
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     connection_args={
         "device_type": "cisco_ios",
         "username": "admin",  # 会被 credential 覆盖
@@ -438,7 +460,7 @@ rendering = {
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    commands="show vlan {{ vlan_id }}",
+    command="show vlan {{ vlan_id }}",
     rendering={
         "template": "show vlan {{ vlan_id }}",
         "context": {"vlan_id": 100},
@@ -465,7 +487,7 @@ parsing = {
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     parsing={
         "engine": "textfsm",
         "template": "cisco_ios_show_version.textfsm",
@@ -481,18 +503,18 @@ job = client.collect(
 
 ```python
 webhook = {
-    "url": "https://api.example.com/callback",  # [必需] 回调 URL
-    "method": "POST",                           # [可选] HTTP 方法，默认 POST
-    "headers": {                                # [可选] 自定义 Headers
+    "name": "basic",                              # [可选] WebHook 处理器名称，默认 "basic"
+    "url": "https://api.example.com/callback",    # [必需] 回调 URL
+    "method": "POST",                             # [可选] HTTP 方法：GET/POST/PUT/DELETE/PATCH，默认 POST
+    "headers": {                                  # [可选] 自定义 Headers
         "Authorization": "Bearer token",
         "Content-Type": "application/json",
     },
-    "body": {                                   # [可选] 自定义 Body
-        "job_id": "{{ job_id }}",
-        "status": "{{ status }}",
+    "cookies": {                                  # [可选] Cookies
+        "session": "xxx",
     },
-    "timeout": 30,                              # [可选] 回调超时（秒）
-    "retry": 3,                                 # [可选] 重试次数
+    "auth": ("username", "password"),             # [可选] Basic Auth 认证
+    "timeout": 5.0,                               # [可选] 回调超时（秒），范围 0.5-120，默认 5.0
 }
 ```
 
@@ -500,7 +522,7 @@ webhook = {
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     webhook={
         "url": "https://api.example.com/notifications",
         "method": "POST",
@@ -520,7 +542,7 @@ job = client.collect(
 ```python
 job = client.collect(
     devices=["10.1.1.1", "10.1.1.2"],
-    commands="show version",
+    command="show version",
 )
 ```
 
@@ -529,7 +551,7 @@ job = client.collect(
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    commands="show running-config",
+    command="show running-config",
     timeout=600,
     driver_args={
         "read_timeout": 120,
@@ -558,7 +580,7 @@ job = client.collect(
         {"host": "10.1.1.2", "command": "show power"},
         {"host": "10.1.1.3", "command": "show environment"},
     ],
-    commands="show version",
+    command="show version",
 )
 ```
 
@@ -567,7 +589,7 @@ job = client.collect(
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    commands="show version",
+    command="show version",
     connection_args={
         "device_type": "cisco_ios",  # 只提供非认证参数
     },
@@ -583,7 +605,7 @@ job = client.collect(
 ```python
 job = client.collect(
     devices=["10.1.1.1", "10.1.1.2"],
-    commands="show version",
+    command="show version",
     webhook={
         "url": "https://api.example.com/notify",
     },
@@ -598,7 +620,7 @@ devices = [f"10.1.1.{i}" for i in range(1, 255)]
 
 job = client.collect(
     devices=devices,
-    commands="show version",
+    command="show version",
 )
 ```
 
@@ -635,10 +657,75 @@ job = client.collect(
 
 ---
 
+## 10. Result 对象
+
+### 属性
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `job_id` | `str` | 任务 ID |
+| `device_id` | `str` | 设备 IP/标识 |
+| `device_name` | `str` | 设备名称 |
+| `command` | `str` | 执行的命令 |
+| `stdout` | `str` | 标准输出 |
+| `stderr` | `str` | 标准错误输出 |
+| `ok` | `bool` | 任务是否成功 |
+| `duration_ms` | `int` | 执行耗时（毫秒） |
+| `error` | `Error` | 错误信息（`type`, `message`） |
+| `is_success` | `bool` | 真正成功（`ok=True` 且无设备错误） |
+
+### 方法
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `has_device_error(patterns)` | `bool` | 检测输出是否有错误 |
+| `get_error_lines()` | `List[str]` | 提取错误行 |
+| `to_dict()` | `dict` | 转字典 |
+| `to_json()` | `str` | 转 JSON |
+
+---
+
+## 11. Job 对象
+
+### 属性
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `id` | `str` | 任务 ID |
+| `status` | `str` | 状态：`queued`/`started`/`finished`/`failed`/`canceled` |
+| `all_ok` | `bool` | 是否全部成功 |
+| `outputs` | `dict` | 输出字典 `{device: stdout}` |
+
+### 方法
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `wait(timeout)` | `Job` | 等待完成 |
+| `refresh()` | `Job` | 刷新状态 |
+| `cancel()` | `None` | 取消任务 |
+| `results()` | `List[Result]` | 所有结果 |
+| `first()` | `Result` | 第一个结果 |
+| `succeeded()` | `List[Result]` | 成功结果 |
+| `failed()` | `List[Result]` | 失败结果 |
+| `truly_succeeded()` | `List[Result]` | 真正成功 |
+| `device_errors()` | `List[Result]` | 设备错误 |
+| `progress()` | `JobProgress` | 执行进度 |
+| `stream(poll_interval)` | `Iterator` | 流式结果 |
+| `to_dict()` | `dict` | 转字典 |
+
+### 迭代
+
+```python
+for result in job:           # 直接迭代
+    print(result.stdout)
+
+result = job[0]              # 索引访问
+results = job["10.1.1.1"]    # 按设备名
+```
+
+---
+
 ## 相关文档
 
 - **完整示例**：`examples/README.md`
-- **驱动指南**：`examples/DRIVER_GUIDE.md`
-- **Bulk 增强特性**：`docs/BULK_PER_DEVICE_COMMANDS.md`
 - **SDK 文档**：`README.md`
-

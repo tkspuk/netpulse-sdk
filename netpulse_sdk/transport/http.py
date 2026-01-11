@@ -9,7 +9,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..error import AuthError, NetworkError, TimeoutError
+from ..error import AuthError, NetworkError, RequestTimeoutError
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class HTTPClient:
             response = self.session.get(url, params=params, timeout=self.timeout)
             return self._handle_response(response)
         except requests.exceptions.Timeout as e:
-            raise TimeoutError(f"Request timeout: {url}", url=url) from e
+            raise RequestTimeoutError(f"Request timeout: {url}", url=url) from e
         except requests.exceptions.RequestException as e:
             raise NetworkError(f"Network request failed: {str(e)}") from e
 
@@ -94,7 +94,7 @@ class HTTPClient:
             response = self.session.post(url, json=json, timeout=self.timeout)
             return self._handle_response(response)
         except requests.exceptions.Timeout as e:
-            raise TimeoutError(f"Request timeout: {url}", url=url) from e
+            raise RequestTimeoutError(f"Request timeout: {url}", url=url) from e
         except requests.exceptions.RequestException as e:
             raise NetworkError(f"Network request failed: {str(e)}") from e
 
@@ -105,7 +105,29 @@ class HTTPClient:
             response = self.session.delete(url, params=params, timeout=self.timeout)
             return self._handle_response(response)
         except requests.exceptions.Timeout as e:
-            raise TimeoutError(f"Request timeout: {url}", url=url) from e
+            raise RequestTimeoutError(f"Request timeout: {url}", url=url) from e
+        except requests.exceptions.RequestException as e:
+            raise NetworkError(f"Network request failed: {str(e)}") from e
+
+    def put(self, path: str, json: Optional[dict] = None) -> dict:
+        """Send PUT request"""
+        url = f"{self.base_url}{path}"
+        try:
+            response = self.session.put(url, json=json, timeout=self.timeout)
+            return self._handle_response(response)
+        except requests.exceptions.Timeout as e:
+            raise RequestTimeoutError(f"Request timeout: {url}", url=url) from e
+        except requests.exceptions.RequestException as e:
+            raise NetworkError(f"Network request failed: {str(e)}") from e
+
+    def patch(self, path: str, json: Optional[dict] = None) -> dict:
+        """Send PATCH request"""
+        url = f"{self.base_url}{path}"
+        try:
+            response = self.session.patch(url, json=json, timeout=self.timeout)
+            return self._handle_response(response)
+        except requests.exceptions.Timeout as e:
+            raise RequestTimeoutError(f"Request timeout: {url}", url=url) from e
         except requests.exceptions.RequestException as e:
             raise NetworkError(f"Network request failed: {str(e)}") from e
 

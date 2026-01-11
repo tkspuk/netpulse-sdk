@@ -206,7 +206,7 @@ class Job(JobInterface):
                 retryable=self._is_retryable_error(error_data.get("type")),
             )
 
-        if isinstance(retval, dict):
+        if isinstance(retval, dict) and retval:
             for cmd, output in retval.items():
                 results.append(
                     Result(
@@ -221,7 +221,7 @@ class Job(JobInterface):
                         error=error,
                     )
                 )
-        elif isinstance(retval, list):
+        elif isinstance(retval, list) and retval:
             for idx, output in enumerate(retval):
                 cmd = self._commands[idx] if idx < len(self._commands) else f"command_{idx + 1}"
                 results.append(
@@ -252,9 +252,17 @@ class Job(JobInterface):
                     error=error,
                 )
             )
-        elif not ok:
+
+        # If no results generated yet (empty retval, None, or failed job), create error result
+        if not results:
             commands_to_report = self._commands if self._commands else ["unknown"]
             for cmd in commands_to_report:
+                error_msg = "Job failed with no output"
+                if error:
+                    error_msg = error.message
+                elif not ok:
+                    error_msg = f"Job {self.status} with empty result"
+
                 results.append(
                     Result(
                         job_id=self.id,
@@ -262,8 +270,8 @@ class Job(JobInterface):
                         device_name=self._device_name,
                         command=cmd,
                         stdout="",
-                        stderr=error.message if error else "Job failed",
-                        ok=False,
+                        stderr=error_msg,
+                        ok=ok,
                         duration_ms=duration_ms,
                         error=error,
                     )
@@ -277,13 +285,21 @@ class Job(JobInterface):
         return error_type.lower() in retryable_types
 
     def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
-        """Stream results
+        """Stream results (with exponential backoff)
 
         Single job stream waits for completion then returns all results
+
+        Args:
+            poll_interval: Initial polling interval in seconds, default 0.5
         """
+        interval = poll_interval
+        max_interval = 5.0
+        backoff_factor = 1.5
+
         while not self.is_done():
-            time.sleep(poll_interval)
+            time.sleep(interval)
             self.refresh()
+            interval = min(interval * backoff_factor, max_interval)
 
         yield from self.results()
 
@@ -339,6 +355,47 @@ class Job(JobInterface):
         """Get device error results (task completed but device returned errors)"""
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
+
+    def first(self) -> Optional[Result]:
+        """Get the first result (convenience for single device scenarios)
+
+        Returns:
+            First Result or None if no results
+        """
+        self.wait()
+        results = self.results()
+        return results[0] if results else None
+
+    @property
+    def all_ok(self) -> bool:
+        """Check if all results are successful
+
+        Returns:
+            True if all results have ok=True
+        """
+        self.wait()
+        results = self.results()
+        return len(results) > 0 and all(r.ok for r in results)
+
+    @property
+    def outputs(self) -> dict:
+        """Get all outputs as a dictionary
+
+        Returns:
+            {device_name: stdout} for single-command jobs
+            {device_name: {command: stdout}} for multi-command jobs
+        """
+        self.wait()
+        results = self.results()
+        if len(results) == 1:
+            return {results[0].device_name: results[0].stdout}
+        else:
+            output_dict = {}
+            for r in results:
+                if r.device_name not in output_dict:
+                    output_dict[r.device_name] = {}
+                output_dict[r.device_name][r.command] = r.stdout
+            return output_dict
 
     def __repr__(self):
         return f"Job(id={self.id}, status={self.status})"
@@ -448,22 +505,40 @@ class JobGroup(JobInterface):
         )
 
     def results(self) -> List[Result]:
-        """Aggregate results from all jobs"""
+        """Aggregate results from all jobs
+
+        Uses caching when all jobs are done to avoid redundant API calls.
+        """
+        # Return cached results if available and all jobs are done
+        if self._results_cache is not None and self.is_done():
+            return self._results_cache
+
         all_results = []
         for job in self.jobs:
             all_results.extend(job.results())
+
+        # Cache results when all jobs are done
+        if self.is_done():
+            self._results_cache = all_results
+
         return all_results
 
     def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
-        """Stream results
+        """Stream results (with exponential backoff)
 
         Implementation:
         1. Track returned results (deduplicate by job_id + command)
         2. Periodically refresh all jobs
         3. Yield newly completed results
         4. Continue until all jobs complete
+
+        Args:
+            poll_interval: Initial polling interval in seconds, default 0.5
         """
         seen = set()
+        interval = poll_interval
+        max_interval = 5.0
+        backoff_factor = 1.5
 
         while not self.is_done():
             self.refresh()
@@ -474,7 +549,8 @@ class JobGroup(JobInterface):
                     seen.add(key)
                     yield result
 
-            time.sleep(poll_interval)
+            time.sleep(interval)
+            interval = min(interval * backoff_factor, max_interval)
 
         for result in self.results():
             key = (result.job_id, result.command)
@@ -551,6 +627,48 @@ class JobGroup(JobInterface):
         """
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
+
+    def first(self) -> Optional[Result]:
+        """Get the first result (convenience for single device scenarios)
+
+        Returns:
+            First Result or None if no results
+        """
+        self.wait()
+        results = self.results()
+        return results[0] if results else None
+
+    @property
+    def all_ok(self) -> bool:
+        """Check if all results are successful
+
+        Returns:
+            True if all results have ok=True
+        """
+        self.wait()
+        results = self.results()
+        return len(results) > 0 and all(r.ok for r in results)
+
+    @property
+    def outputs(self) -> dict:
+        """Get all outputs as a dictionary
+
+        Returns:
+            {device_name: stdout} for single-command jobs
+            {device_name: {command: stdout}} for multi-command jobs
+        """
+        self.wait()
+        result_dict = {}
+        for r in self.results():
+            if len(self.jobs[0]._commands) <= 1:
+                # Single command: {device: stdout}
+                result_dict[r.device_name] = r.stdout
+            else:
+                # Multi command: {device: {cmd: stdout}}
+                if r.device_name not in result_dict:
+                    result_dict[r.device_name] = {}
+                result_dict[r.device_name][r.command] = r.stdout
+        return result_dict
 
     def __repr__(self):
         return f"JobGroup(jobs={len(self.jobs)}, status={self.status})"

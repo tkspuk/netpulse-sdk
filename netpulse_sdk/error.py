@@ -38,7 +38,7 @@ class NetworkError(NetPulseError):
         super().__init__(message, detail)
 
 
-class TimeoutError(NetPulseError):
+class RequestTimeoutError(NetPulseError):
     """Request timeout"""
 
     def __init__(self, message: str, url: Optional[str] = None, detail: Optional[dict] = None):
@@ -48,6 +48,10 @@ class TimeoutError(NetPulseError):
         if url:
             detail["url"] = url
         super().__init__(message, detail)
+
+
+# Backward compatibility alias
+TimeoutError = RequestTimeoutError
 
 
 class JobFailedError(NetPulseError):

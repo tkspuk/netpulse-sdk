@@ -3,6 +3,7 @@ NetPulse client
 """
 
 import logging
+import os
 from typing import List, Literal, Optional, Union
 
 from .error import NetPulseError
@@ -17,27 +18,69 @@ class NetPulseClient:
 
     def __init__(
         self,
-        base_url: str,
-        api_key: str,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
         timeout: int = 30,
         driver: str = "netmiko",
         default_connection_args: Optional[dict] = None,
         pool_connections: int = 10,
         pool_maxsize: int = 200,
         max_retries: int = 3,
+        profile: Optional[str] = None,
+        config_path: Optional[str] = None,
     ):
         """Initialize NetPulse client
 
         Args:
-            base_url: NetPulse API URL, e.g., http://localhost:9000
-            api_key: API key
+            base_url: NetPulse API URL. Falls back to config file, then NETPULSE_URL env var.
+            api_key: API key. Falls back to config file, then NETPULSE_API_KEY env var.
             timeout: HTTP request timeout in seconds
             driver: Default driver (netmiko, napalm, pyeapi, paramiko)
             default_connection_args: Default connection arguments (username, password, etc.)
             pool_connections: HTTP connection pool count (default 10)
             pool_maxsize: Maximum connections per pool (default 200, increase to 500 for large batches)
             max_retries: HTTP request auto-retry count (default 3)
+            profile: Config profile name (default uses 'default' profile)
+            config_path: Explicit config file path (optional)
         """
+        # Load config file
+        from .config import load_config, get_config_value
+
+        config = load_config(config_path=config_path, profile=profile)
+
+        # Priority: explicit param > config file > environment variable
+        base_url = base_url or get_config_value(config, "base_url") or os.environ.get("NETPULSE_URL")
+        api_key = api_key or get_config_value(config, "api_key") or os.environ.get("NETPULSE_API_KEY")
+        timeout = timeout if timeout != 30 else get_config_value(config, "timeout", 30)
+        driver = driver if driver != "netmiko" else get_config_value(config, "driver", "netmiko")
+        
+        # Merge connection args: config file < explicit param
+        config_conn_args = get_config_value(config, "connection_args", {})
+        if default_connection_args:
+            config_conn_args.update(default_connection_args)
+        default_connection_args = config_conn_args
+
+        # Pool settings from config
+        pool_connections = pool_connections if pool_connections != 10 else get_config_value(config, "pool_connections", 10)
+        pool_maxsize = pool_maxsize if pool_maxsize != 200 else get_config_value(config, "pool_maxsize", 200)
+        max_retries = max_retries if max_retries != 3 else get_config_value(config, "max_retries", 3)
+
+        # Improved error messages
+        if not base_url:
+            raise ValueError(
+                "base_url is required.\n"
+                "  → Set via parameter: NetPulseClient(base_url='http://...')\n"
+                "  → Or config file: netpulse.yaml with 'base_url' key\n"
+                "  → Or env var: export NETPULSE_URL=http://..."
+            )
+        if not api_key:
+            raise ValueError(
+                "api_key is required.\n"
+                "  → Set via parameter: NetPulseClient(api_key='...')\n"
+                "  → Or config file: netpulse.yaml with 'api_key' key\n"
+                "  → Or env var: export NETPULSE_API_KEY=..."
+            )
+
         self._http = HTTPClient(
             base_url=base_url,
             api_key=api_key,
@@ -49,13 +92,113 @@ class NetPulseClient:
         self.driver = driver
         self.default_connection_args = default_connection_args or {}
 
+    def __enter__(self) -> "NetPulseClient":
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit - close connections"""
+        self.close()
+
+    def close(self) -> None:
+        """Close HTTP connection pool"""
+        self._http.close()
+
+    def ping(self) -> bool:
+        """Check if NetPulse API is reachable
+
+        Returns:
+            True if API is reachable, raises exception otherwise
+        """
+        try:
+            # Use a lightweight endpoint to check connectivity
+            self._http.get("/health")
+            return True
+        except Exception as e:
+            raise NetPulseError(f"API health check failed: {e}") from e
+
+    def test_connection(
+        self,
+        device: str,
+        connection_args: Optional[dict] = None,
+        driver: Optional[str] = None,
+    ) -> "ConnectionTestResult":
+        """Test device connection
+
+        Args:
+            device: Device IP/hostname
+            connection_args: Connection arguments (overrides default_connection_args)
+            driver: Driver name (overrides default driver)
+
+        Returns:
+            ConnectionTestResult with success, latency, error info
+        """
+        from .result import ConnectionTestResult
+        from datetime import datetime
+
+        use_driver = driver or self.driver
+        conn_args = {**self.default_connection_args}
+        if connection_args:
+            conn_args.update(connection_args)
+        conn_args["host"] = device
+
+        payload = {
+            "driver": use_driver,
+            "connection_args": conn_args,
+        }
+
+        try:
+            resp = self._http.post("/device/test", json=payload)
+            data = resp.get("data", {})
+
+            return ConnectionTestResult(
+                success=data.get("success", False),
+                host=device,
+                latency=data.get("latency"),
+                error=data.get("error"),
+                driver=use_driver,
+                timestamp=datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
+                if data.get("timestamp")
+                else datetime.now(),
+            )
+        except Exception as e:
+            return ConnectionTestResult(
+                success=False,
+                host=device,
+                latency=None,
+                error=str(e),
+                driver=use_driver,
+                timestamp=datetime.now(),
+            )
+
+    def test_connections(
+        self,
+        devices: List[str],
+        connection_args: Optional[dict] = None,
+        driver: Optional[str] = None,
+    ) -> List["ConnectionTestResult"]:
+        """Test multiple device connections
+
+        Args:
+            devices: List of device IPs/hostnames
+            connection_args: Connection arguments (overrides default_connection_args)
+            driver: Driver name (overrides default driver)
+
+        Returns:
+            List of ConnectionTestResult
+        """
+        return [
+            self.test_connection(device, connection_args=connection_args, driver=driver)
+            for device in devices
+        ]
+
     def run(
         self,
         devices: Union[List[str], str, List[dict]],
-        commands: Union[List[str], str] = None,
+        command: Union[List[str], str] = None,
         config: Union[List[str], str] = None,
         mode: Literal["auto", "exec", "bulk"] = "auto",
-        timeout: int = 300,
+        ttl: int = 300,
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
         driver_args: Optional[dict] = None,
@@ -66,14 +209,14 @@ class NetPulseClient:
         result_ttl: Optional[int] = None,
         webhook: Optional[dict] = None,
     ) -> Job:
-        """Execute commands or configuration
+        """Execute command or configuration
 
         Args:
             devices: Device list or single device (IP/hostname or connection_args dict)
-            commands: Command list or single command (query commands, mutually exclusive with config)
-            config: Configuration command list or single command (mutually exclusive with commands)
+            command: Command list or single command (query commands, mutually exclusive with config)
+            config: Configuration command list or single command (mutually exclusive with command)
             mode: Execution mode (auto, exec for single device, bulk for multiple devices)
-            timeout: Job timeout in seconds (ttl parameter)
+            ttl: Job timeout in seconds
             connection_args: Connection arguments (overrides default_connection_args)
             driver: Driver name (overrides default driver)
             driver_args: Driver-specific parameters (read_timeout, delay_factor, etc.)
@@ -81,7 +224,7 @@ class NetPulseClient:
             rendering: Template rendering configuration (name, template, context)
             parsing: Output parsing configuration (name, template, context)
             queue_strategy: Queue strategy (fifo or pinned)
-            result_ttl: Result retention time in seconds
+            result_ttl: Result retention time in seconds (60-604800)
             webhook: Webhook callback configuration (url, method, headers, etc.)
 
         Returns:
@@ -89,14 +232,14 @@ class NetPulseClient:
         """
         devices = [devices] if isinstance(devices, str) else devices
 
-        if commands and config:
-            raise ValueError("commands and config are mutually exclusive")
-        if not commands and not config:
-            raise ValueError("Either commands or config must be specified")
+        if command and config:
+            raise ValueError("command and config are mutually exclusive")
+        if not command and not config:
+            raise ValueError("Either command or config must be specified")
 
-        operation = commands if commands else config
+        operation = command if command else config
         operation = [operation] if isinstance(operation, str) else operation
-        operation_type = "command" if commands else "config"
+        operation_type = "command" if command else "config"
 
         if not devices:
             raise ValueError("devices cannot be empty")
@@ -114,7 +257,7 @@ class NetPulseClient:
                 device=device,
                 operation=operation,
                 operation_type=operation_type,
-                timeout=timeout,
+                ttl=ttl,
                 connection_args=conn_args,
                 driver=use_driver,
                 driver_args=driver_args,
@@ -130,7 +273,7 @@ class NetPulseClient:
                 devices=devices,
                 operation=operation,
                 operation_type=operation_type,
-                timeout=timeout,
+                ttl=ttl,
                 connection_args=conn_args,
                 driver=use_driver,
                 driver_args=driver_args,
@@ -145,8 +288,8 @@ class NetPulseClient:
     def collect(
         self,
         devices: Union[List[str], str, List[dict]],
-        commands: Union[List[str], str],
-        timeout: int = 300,
+        command: Union[List[str], str],
+        ttl: int = 300,
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
         driver_args: Optional[dict] = None,
@@ -162,22 +305,22 @@ class NetPulseClient:
 
         Args:
             devices: Device list or single device
-            commands: Command list or single command
-            timeout: Job timeout in seconds
+            command: Command list or single command
+            ttl: Job timeout in seconds
             connection_args: Connection arguments
             driver: Driver name
             driver_args: Driver-specific parameters
-            credential: Vault credential reference
+            credential: Vault credential reference (name is required)
             parsing: Output parsing configuration
             queue_strategy: Queue strategy
-            result_ttl: Result retention time
+            result_ttl: Result retention time (60-604800 seconds)
             webhook: Webhook callback configuration
         """
         return self.run(
             devices=devices,
-            commands=commands,
+            command=command,
             mode="auto",
-            timeout=timeout,
+            ttl=ttl,
             connection_args=connection_args,
             driver=driver,
             driver_args=driver_args,
@@ -204,6 +347,145 @@ class NetPulseClient:
         job_data = resp["data"][0]
         return Job(client=self, job_data=job_data, device_name="unknown", commands=[])
 
+    def list_jobs(
+        self,
+        queue: Optional[str] = None,
+        status: Optional[str] = None,
+        node: Optional[str] = None,
+        host: Optional[str] = None,
+    ) -> List[Job]:
+        """List jobs with optional filters
+
+        Args:
+            queue: Filter by queue name (e.g., 'netmiko', 'napalm')
+            status: Filter by job status ('queued', 'started', 'finished', 'failed')
+            node: Filter by node name
+            host: Filter by pinned host name
+
+        Returns:
+            List of Job instances
+        """
+        params = {}
+        if queue:
+            params["queue"] = queue
+        if status:
+            params["status"] = status
+        if node:
+            params["node"] = node
+        if host:
+            params["host"] = host
+
+        resp = self._http.get("/job", params=params if params else None)
+        jobs_data = resp.get("data", []) or []
+
+        return [
+            Job(client=self, job_data=job_data, device_name="unknown", commands=[])
+            for job_data in jobs_data
+        ]
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a queued job
+
+        Args:
+            job_id: Job ID to cancel
+
+        Returns:
+            True if cancelled successfully
+        """
+        resp = self._http.delete("/job", params={"id": job_id})
+        cancelled = resp.get("data", []) or []
+        return job_id in cancelled
+
+    def cancel_jobs(
+        self,
+        queue: Optional[str] = None,
+        host: Optional[str] = None,
+    ) -> List[str]:
+        """Cancel multiple queued jobs
+
+        Args:
+            queue: Filter by queue name
+            host: Filter by pinned host name
+
+        Returns:
+            List of cancelled job IDs
+        """
+        params = {}
+        if queue:
+            params["queue"] = queue
+        if host:
+            params["host"] = host
+
+        resp = self._http.delete("/job", params=params if params else None)
+        return resp.get("data", []) or []
+
+    def list_workers(
+        self,
+        queue: Optional[str] = None,
+        node: Optional[str] = None,
+        host: Optional[str] = None,
+    ) -> List[dict]:
+        """List workers with optional filters
+
+        Args:
+            queue: Filter by queue name
+            node: Filter by node name
+            host: Filter by pinned host name
+
+        Returns:
+            List of worker info dictionaries with keys:
+                - name: Worker name
+                - status: Worker status ('idle', 'busy', 'suspended')
+                - pid: Process ID
+                - hostname: Host name
+                - queues: List of queue names
+                - last_heartbeat: Last heartbeat time
+                - birth_at: Worker start time
+                - successful_job_count: Successful job count
+                - failed_job_count: Failed job count
+        """
+        params = {}
+        if queue:
+            params["queue"] = queue
+        if node:
+            params["node"] = node
+        if host:
+            params["host"] = host
+
+        resp = self._http.get("/worker", params=params if params else None)
+        return resp.get("data", []) or []
+
+    def delete_workers(
+        self,
+        name: Optional[str] = None,
+        queue: Optional[str] = None,
+        node: Optional[str] = None,
+        host: Optional[str] = None,
+    ) -> List[str]:
+        """Delete workers with optional filters
+
+        Args:
+            name: Worker name to delete
+            queue: Filter by queue name
+            node: Filter by node name
+            host: Filter by pinned host name
+
+        Returns:
+            List of deleted worker names
+        """
+        params = {}
+        if name:
+            params["name"] = name
+        if queue:
+            params["queue"] = queue
+        if node:
+            params["node"] = node
+        if host:
+            params["host"] = host
+
+        resp = self._http.delete("/worker", params=params if params else None)
+        return resp.get("data", []) or []
+
     def _select_api(
         self, devices: List[str], mode: Literal["auto", "exec", "bulk"]
     ) -> Literal["exec", "bulk"]:
@@ -227,12 +509,47 @@ class NetPulseClient:
         else:
             return "bulk"
 
+    def _add_optional_params(
+        self,
+        payload: dict,
+        driver_args: Optional[dict] = None,
+        credential: Optional[dict] = None,
+        rendering: Optional[dict] = None,
+        parsing: Optional[dict] = None,
+        queue_strategy: Optional[str] = None,
+        result_ttl: Optional[int] = None,
+        webhook: Optional[dict] = None,
+    ) -> dict:
+        """Add optional parameters to payload if they are not None
+
+        Args:
+            payload: Base payload dictionary
+            **kwargs: Optional parameters to add
+
+        Returns:
+            Updated payload dictionary
+        """
+        optional_params = {
+            "driver_args": driver_args,
+            "credential": credential,
+            "rendering": rendering,
+            "parsing": parsing,
+            "queue_strategy": queue_strategy,
+            "result_ttl": result_ttl,
+            "webhook": webhook,
+        }
+        for key, value in optional_params.items():
+            if value is not None:
+                payload[key] = value
+        return payload
+
+
     def _call_exec_api(
         self,
         device: str,
         operation: List[str],
         operation_type: str,
-        timeout: int,
+        ttl: int,
         connection_args: dict,
         driver: str,
         driver_args: Optional[dict] = None,
@@ -254,23 +571,20 @@ class NetPulseClient:
                 "host": device,
             },
             operation_type: operation,
-            "ttl": timeout,
+            "ttl": ttl,
         }
-        if driver_args:
-            payload["driver_args"] = driver_args
-        if credential:
-            payload["credential"] = credential
-        if rendering:
-            payload["rendering"] = rendering
-        if parsing:
-            payload["parsing"] = parsing
-        if queue_strategy:
-            payload["queue_strategy"] = queue_strategy
-        if result_ttl:
-            payload["result_ttl"] = result_ttl
-        if webhook:
-            payload["webhook"] = webhook
+        self._add_optional_params(
+            payload,
+            driver_args=driver_args,
+            credential=credential,
+            rendering=rendering,
+            parsing=parsing,
+            queue_strategy=queue_strategy,
+            result_ttl=result_ttl,
+            webhook=webhook,
+        )
 
+        log.debug(f"Calling exec API for device: {device}")
         resp = self._http.post("/device/exec", json=payload)
         job_data = resp["data"]
 
@@ -281,7 +595,7 @@ class NetPulseClient:
         devices: List[Union[str, dict]],
         operation: List[str],
         operation_type: str,
-        timeout: int,
+        ttl: int,
         connection_args: dict,
         driver: str,
         driver_args: Optional[dict] = None,
@@ -310,23 +624,20 @@ class NetPulseClient:
             "connection_args": connection_args,
             "devices": normalized_devices,
             operation_type: operation,
-            "ttl": timeout,
+            "ttl": ttl,
         }
-        if driver_args:
-            payload["driver_args"] = driver_args
-        if credential:
-            payload["credential"] = credential
-        if rendering:
-            payload["rendering"] = rendering
-        if parsing:
-            payload["parsing"] = parsing
-        if queue_strategy:
-            payload["queue_strategy"] = queue_strategy
-        if result_ttl:
-            payload["result_ttl"] = result_ttl
-        if webhook:
-            payload["webhook"] = webhook
+        self._add_optional_params(
+            payload,
+            driver_args=driver_args,
+            credential=credential,
+            rendering=rendering,
+            parsing=parsing,
+            queue_strategy=queue_strategy,
+            result_ttl=result_ttl,
+            webhook=webhook,
+        )
 
+        log.debug(f"Calling bulk API for {len(normalized_devices)} devices")
         resp = self._http.post("/device/bulk", json=payload)
 
         data = resp["data"]
@@ -421,15 +732,3 @@ class NetPulseClient:
             )
 
         return JobGroup(jobs=jobs, failed_devices=failed)
-
-    def close(self):
-        """Close client"""
-        self._http.close()
-
-    def __enter__(self):
-        """Support with statement"""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Support with statement"""
-        self.close()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netpulse-sdk"
-version = "0.1.1"
+version = "0.2.0"
 description = "Python SDK for NetPulse Network Automation Platform"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,7 @@ keywords = ["network", "automation", "netpulse", "sdk", "api-client"]
 dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0",
+    "PyYAML>=6.0.0",
 ]
 
 [project.optional-dependencies]

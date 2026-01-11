@@ -55,7 +55,6 @@ netpulse_sdk.egg-info
 
 
 # examples
-examples/
 tests/
 .ruff_cache/
 scripts/pypi

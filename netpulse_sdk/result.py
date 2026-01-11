@@ -2,11 +2,39 @@
 Result and JobProgress data models
 """
 
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 from .error import Error
+
+
+class ConnectionTestResult(BaseModel):
+    """Device connection test result"""
+
+    success: bool = Field(..., description="Whether connection test succeeded")
+    host: str = Field(..., description="Device IP/hostname")
+    latency: Optional[float] = Field(default=None, description="Connection latency in seconds")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+    driver: str = Field(..., description="Driver used for testing")
+    timestamp: Optional[datetime] = Field(default=None, description="Test timestamp")
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary"""
+        return {
+            "success": self.success,
+            "host": self.host,
+            "latency": self.latency,
+            "error": self.error,
+            "driver": self.driver,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+        }
+
+    def __repr__(self):
+        status = "OK" if self.success else "FAILED"
+        latency_str = f" {self.latency*1000:.1f}ms" if self.latency else ""
+        return f"ConnectionTestResult({self.host} [{status}]{latency_str})"
 
 
 class JobProgress(BaseModel):
@@ -72,6 +100,17 @@ class Result(BaseModel):
         return any(pattern.lower() in stdout_lower for pattern in patterns)
 
     @property
+    def output(self) -> str:
+        """Get output content (auto-selects stdout or stderr)
+
+        Returns:
+            stdout if ok, otherwise stderr with [ERROR] prefix
+        """
+        if self.ok:
+            return self.stdout
+        return f"[ERROR] {self.stderr}" if self.stderr else "[ERROR] Unknown error"
+
+    @property
     def is_success(self) -> bool:
         """True success: task completed AND device returned no errors"""
         return self.ok and not self.has_device_error()
@@ -93,6 +132,26 @@ class Result(BaseModel):
 
         return error_lines
 
+    def to_dict(self) -> dict:
+        """Convert to dictionary for easy serialization"""
+        return {
+            "job_id": self.job_id,
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "command": self.command,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "ok": self.ok,
+            "duration_ms": self.duration_ms,
+            "error": {"type": self.error.type, "message": self.error.message} if self.error else None,
+        }
+
+    def to_json(self) -> str:
+        """Convert to JSON string"""
+        import json
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
     def __repr__(self):
         status = "OK" if self.ok else "FAILED"
         return f"Result({self.device_name}:{self.command} [{status}])"
+

@@ -15,3 +15,8 @@ def setup_logging(level: str = "INFO"):
         level=getattr(logging, level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+
+
+def enable_debug():
+    """Enable debug logging for NetPulse SDK (one-liner shortcut)"""
+    setup_logging("DEBUG")
