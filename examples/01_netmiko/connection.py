@@ -8,6 +8,9 @@ from netpulse_sdk import NetPulseClient
 # 使用环境变量或显式传参
 np = NetPulseClient(
     driver="netmiko",
+    base_url="http://localhost:9000",
+    api_key="api_key",
+    
     default_connection_args={
         "device_type": "hp_comware",  # cisco_ios, hp_comware, huawei 等
         "username": "admin",

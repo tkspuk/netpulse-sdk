@@ -443,12 +443,12 @@ job = client.collect(
 
 ## 7. rendering 模板渲染
 
-使用 Jinja2 模板渲染命令
+使用 Jinja2 模板渲染命令或配置
 
 ```python
 rendering = {
-    "name": "template-name",        # [可选] 模板名称（从数据库加载）
-    "template": "show vlan {{ id }}", # [可选] 内联模板
+    "name": "jinja2",               # [必需] 渲染器名称，目前支持 "jinja2"
+    "template": "show vlan {{ id }}", # [必需] 内联模板（Jinja2 语法）
     "context": {                    # [必需] 模板变量
         "id": 100,
         "name": "DATA",
@@ -456,14 +456,43 @@ rendering = {
 }
 ```
 
-示例：
+> [!IMPORTANT]
+> 使用 `rendering` 时，`command` 或 `config` 参数**必须设置为空字典 `{}`**，API 会用渲染后的模板结果替换它。
+
+### 7.1 查询命令示例
+
 ```python
 job = client.collect(
     devices="10.1.1.1",
-    command="show vlan {{ vlan_id }}",
+    command={},  # 使用模板时必须为空字典
     rendering={
+        "name": "jinja2",
         "template": "show vlan {{ vlan_id }}",
         "context": {"vlan_id": 100},
+    },
+)
+```
+
+### 7.2 配置命令示例
+
+```python
+# 配置模板
+config_template = """interface {{ interface }}
+description {{ description }}
+ip address {{ ip }} {{ mask }}"""
+
+job = client.run(
+    devices=["10.1.1.1", "10.1.1.2"],
+    config={},  # 使用模板时必须为空字典
+    rendering={
+        "name": "jinja2",
+        "template": config_template,
+        "context": {
+            "interface": "GigabitEthernet0/1",
+            "description": "Uplink to Core",
+            "ip": "192.168.1.1",
+            "mask": "255.255.255.0",
+        },
     },
 )
 ```

@@ -307,6 +307,54 @@ class NetPulseClient:
                 webhook=webhook,
             )
 
+    def render_template(
+        self, template: str, context: Optional[dict] = None, name: str = "jinja2"
+    ) -> str:
+        """Render a template
+
+        Args:
+            template: Template content
+            context: Variables for the template
+            name: Renderer name (default: "jinja2")
+
+        Returns:
+            Rendered string
+        """
+        payload = {
+            "template": template,
+            "context": context,
+            "name": name,
+        }
+        # Remove None values
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        resp = self._http.post("/template/render", json=payload)
+        return resp.get("data", "")
+
+    def parse_template(
+        self, template: str, context: str, name: str = "textfsm"
+    ) -> Union[List[dict], dict]:
+        """Parse text using a template
+
+        Args:
+            template: Template content (e.g. TextFSM)
+            context: Text to parse
+            name: Parser name (default: "textfsm")
+
+        Returns:
+            Parsed data (list of dicts or dict)
+        """
+        payload = {
+            "template": template,
+            "context": context,
+            "name": name,
+        }
+        # Remove None values
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        resp = self._http.post("/template/parse", json=payload)
+        return resp.get("data", [])
+
     def collect(
         self,
         devices: Union[List[str], str, List[dict]],

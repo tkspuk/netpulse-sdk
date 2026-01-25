@@ -24,35 +24,36 @@ client = NetPulseClient(
     },
 )
 
-# Collect device information
-job = client.collect(
-    devices=["10.1.1.1", "10.1.1.2"],
-    command="show version",
-)
+# Query device
+result = client.collect("10.1.1.1", "show version").first()
+print(result.output)
 
-# Process results
-for result in job:
-    if result.ok:
-        print(f"{result.device_name}: {result.output[:50]}...")
-    else:
-        print(f"{result.device_name}: {result.output}")
+# Push configuration
+job = client.run(devices="10.1.1.1", config=["hostname ROUTER-01"])
+print(f"Success: {job.all_ok}")
 ```
 
 ## Features
 
 - **Batch Execution**: Execute commands on multiple devices simultaneously
 - **Configuration Push**: Push configuration changes to network devices
-- **Stream Processing**: Process results as they complete
+- **Multiple Drivers**: Support for netmiko, napalm, pyeapi, and paramiko
 - **Progress Monitoring**: Track job progress in real-time
 - **Error Handling**: Comprehensive error handling with detailed error messages
-- **Multiple Drivers**: Support for netmiko, napalm, pyeapi, and paramiko
 
 ## Supported Drivers
 
-- **netmiko** (default) - Most network devices (Cisco, HP, Huawei, Juniper, etc.)
-- **napalm** - Multi-vendor unified interface
-- **pyeapi** - Arista devices (eAPI)
-- **paramiko** - Linux servers
+| Driver | Use Case |
+|--------|----------|
+| `netmiko` | Network devices (Cisco, HP, Huawei, Juniper) |
+| `paramiko` | Linux servers |
+| `pyeapi` | Arista (eAPI) |
+| `napalm` | Multi-vendor unified interface |
+
+## Documentation
+
+- [Examples](examples/README.md)
+- [Parameter Reference](docs/PARAMETERS_REFERENCE.md)
 
 ## License
 

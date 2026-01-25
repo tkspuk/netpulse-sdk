@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Iterator, List, Optional, Union
 
 from .error import Error, JobFailedError
 from .result import JobProgress, Result
+from datetime import datetime
 
 if TYPE_CHECKING:
     from .client import NetPulseClient
@@ -98,6 +99,45 @@ class Job(JobInterface):
     def status(self) -> str:
         """Job status: queued, started, finished, failed, canceled"""
         return self._data.get("status", "unknown")
+
+    @property
+    def duration(self) -> Optional[float]:
+        """Execution duration in seconds"""
+        return self._data.get("duration")
+
+    @property
+    def queue_time(self) -> Optional[float]:
+        """Time spent in queue in seconds"""
+        return self._data.get("queue_time")
+
+    @property
+    def created_at(self) -> Optional[datetime]:
+        """Job creation time"""
+        return self._parse_time(self._data.get("created_at"))
+
+    @property
+    def enqueued_at(self) -> Optional[datetime]:
+        """Job enqueue time"""
+        return self._parse_time(self._data.get("enqueued_at"))
+
+    @property
+    def started_at(self) -> Optional[datetime]:
+        """Job start time"""
+        return self._parse_time(self._data.get("started_at"))
+
+    @property
+    def ended_at(self) -> Optional[datetime]:
+        """Job end time"""
+        return self._parse_time(self._data.get("ended_at"))
+
+    def _parse_time(self, time_str: Optional[str]) -> Optional[datetime]:
+        """Parse ISO format time string"""
+        if not time_str:
+            return None
+        try:
+            return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     def refresh(self) -> "Job":
         """Refresh job status"""
