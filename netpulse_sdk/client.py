@@ -69,7 +69,10 @@ class NetPulseClient:
             api_key or get_config_value(config, "api_key") or os.environ.get("NETPULSE_API_KEY")
         )
         api_key_name = (
-            api_key_name or get_config_value(config, "api_key_name") or os.environ.get("NETPULSE_API_KEY_NAME") or "X-API-KEY"
+            api_key_name
+            or get_config_value(config, "api_key_name")
+            or os.environ.get("NETPULSE_API_KEY_NAME")
+            or "X-API-KEY"
         )
         timeout = timeout if timeout != 30 else get_config_value(config, "timeout", 30)
         driver = driver if driver != "netmiko" else get_config_value(config, "driver", "netmiko")
@@ -174,17 +177,21 @@ class NetPulseClient:
         try:
             resp = self._http.post("/device/test", json=payload)
             # 0.4.0+: resp is ConnectionTestResponse
-            
+
             # Extract standard fields
             ts_str = resp.get("timestamp")
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now()
-            
+
             # Flatten 0.4.0+ 'result' object for better SDK experience
             result_inner = resp.get("result") or {}
-            extra_data = {k: v for k, v in resp.items() if k not in ["success", "latency", "error", "timestamp", "result"]}
+            extra_data = {
+                k: v
+                for k, v in resp.items()
+                if k not in ["success", "latency", "error", "timestamp", "result"]
+            }
             if isinstance(result_inner, dict):
                 extra_data.update(result_inner)
-            
+
             return ConnectionTestResult(
                 ok=resp.get("success", False),
                 host=device,
@@ -192,7 +199,7 @@ class NetPulseClient:
                 error=resp.get("error"),
                 driver=use_driver,
                 timestamp=ts,
-                **extra_data
+                **extra_data,
             )
         except Exception as e:
             return ConnectionTestResult(
@@ -228,15 +235,15 @@ class NetPulseClient:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(devices), 50)) as executor:
             future_to_index = {
                 executor.submit(
-                    self.test_connection, 
-                    device, 
-                    connection_args=connection_args, 
+                    self.test_connection,
+                    device,
+                    connection_args=connection_args,
                     driver=driver,
-                    credential=credential
+                    credential=credential,
                 ): idx
                 for idx, device in enumerate(devices)
             }
-            
+
             for future in concurrent.futures.as_completed(future_to_index):
                 idx = future_to_index[future]
                 try:
@@ -245,6 +252,7 @@ class NetPulseClient:
                     # Create a failed result if something crashed
                     from datetime import datetime
                     from .result import ConnectionTestResult
+
                     results[idx] = ConnectionTestResult(
                         ok=False,
                         host=devices[idx],
@@ -252,7 +260,7 @@ class NetPulseClient:
                         driver=driver or self.driver or "unknown",
                         timestamp=datetime.now(),
                     )
-            
+
         return results
 
     def run(
@@ -283,7 +291,7 @@ class NetPulseClient:
     ) -> Job:
         """Execute operations on devices (API Mode: config or command)
 
-        This is the primary method for executing tasks. It automatically detects 
+        This is the primary method for executing tasks. It automatically detects
         whether to use 'config' or 'command' mode based on the input.
 
         Returns:
@@ -455,7 +463,7 @@ class NetPulseClient:
             if isinstance(first_device, dict):
                 driver = driver or first_device.get("driver")
                 connection_args = connection_args or first_device.get("connection_args")
-            
+
             # Fallback to defaults
             connection_args = connection_args or self.default_connection_args
 
@@ -475,6 +483,7 @@ class NetPulseClient:
             remote_path = file_transfer.get("remote_path")
             if remote_path and (remote_path.endswith("/") or remote_path.endswith("\\")):
                 import os
+
                 filename = os.path.basename(local_upload_file)
                 # Join path and ensure forward slashes for cross-platform compatibility
                 full_remote_path = os.path.join(remote_path, filename).replace("\\", "/")
@@ -534,6 +543,7 @@ class NetPulseClient:
             )
             if return_group:
                 from .job import JobGroup
+
                 return JobGroup(jobs=[job])
             return job
 
@@ -583,21 +593,21 @@ class NetPulseClient:
         }
         if template:
             payload["template"] = template
-            
+
         return self._http.post("/template/parse", json=payload)
 
     def get_job(self, job_id: str) -> Job:
         """Get Job by ID (GET /jobs/{id})
-        
+
         Args:
             job_id: Unique job identifier
         """
         resp = self._http.get(f"/jobs/{job_id}")
-        
+
         # 0.4.0+: Use device_name and command from response if available
         device_name = resp.get("device_name")
         command = resp.get("command")
-        
+
         # Fallback to results if not in top level
         if not device_name or not command:
             result = resp.get("result")
@@ -605,14 +615,16 @@ class NetPulseClient:
                 first_res = result["retval"][0]
                 if not device_name:
                     device_name = (
-                        first_res.get("metadata", {}).get("host") 
+                        first_res.get("metadata", {}).get("host")
                         or first_res.get("device_name")
                         or "unknown"
                     )
                 if not command:
                     command = [r.get("command") for r in result["retval"] if r.get("command")]
-            
-        return Job(client=self, job_data=resp, device_name=device_name or "unknown", command=command)
+
+        return Job(
+            client=self, job_data=resp, device_name=device_name or "unknown", command=command
+        )
 
     def list_jobs(
         self,
@@ -645,17 +657,17 @@ class NetPulseClient:
         # 0.4.0+: resp is List[JobInResponse]
         return [
             Job(
-                client=self, 
-                job_data=job_data, 
-                device_name=job_data.get("device_name") or "unknown", 
-                command=job_data.get("command")
+                client=self,
+                job_data=job_data,
+                device_name=job_data.get("device_name") or "unknown",
+                command=job_data.get("command"),
             )
             for job_data in resp
         ]
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel/Delete a job (DELETE /jobs/{id})
-        
+
         Args:
             job_id: Job ID to cancel
         """
@@ -743,7 +755,7 @@ class NetPulseClient:
         if name:
             resp = self._http.delete(f"/workers/{name}")
             return [name] if resp else []
-            
+
         params = {}
         if queue:
             params["queue"] = queue
@@ -761,10 +773,10 @@ class NetPulseClient:
 
     def list_detached_tasks(self, status: Optional[str] = None) -> List[dict]:
         """List all active detached tasks in the server registry
-        
+
         Args:
             status: Optional status filter (running, completed, launching)
-            
+
         Returns:
             List of detached task metadata dictionaries
         """
@@ -775,11 +787,11 @@ class NetPulseClient:
 
     def get_detached_task(self, task_id: str, offset: Optional[int] = None) -> dict:
         """Query a detached task's status and logs
-        
+
         Args:
             task_id: Detached task ID
             offset: Byte offset to read logs from
-            
+
         Returns:
             Dictionary containing the latest output and task metadata
         """
@@ -790,10 +802,10 @@ class NetPulseClient:
 
     def cancel_detached_task(self, task_id: str) -> bool:
         """Terminate a detached task on the remote host
-        
+
         Args:
             task_id: Detached task ID
-            
+
         Returns:
             True if cancelled successfully
         """
@@ -801,22 +813,22 @@ class NetPulseClient:
         return True
 
     def discover_detached_tasks(
-        self, 
-        device: str, 
+        self,
+        device: str,
         driver: str = "paramiko",
-        connection_args: Optional[dict] = None, 
+        connection_args: Optional[dict] = None,
         driver_args: Optional[dict] = None,
-        credential: Optional[dict] = None
+        credential: Optional[dict] = None,
     ) -> List[dict]:
         """Scan a device for background tasks and sync them into the server registry
-        
+
         Args:
             device: Device IP/hostname
             driver: Driver name (default: paramiko)
             connection_args: Connection arguments
             driver_args: Optional driver arguments
             credential: Optional credential configuration
-            
+
         Returns:
             List of newly discovered task metadata
         """
@@ -842,7 +854,7 @@ class NetPulseClient:
             task_id = task.get("task_id")
             if not task_id:
                 continue
-            
+
             job_data = {
                 "id": f"task_{task_id}",
                 "status": "started" if task.get("status") == "running" else "finished",
@@ -851,10 +863,10 @@ class NetPulseClient:
                 "command": task.get("command"),
                 "driver": task.get("driver"),
             }
-            
+
             device_name = task.get("metadata", {}).get("host") or "recovered_host"
             command = [task.get("command")] if task.get("command") else []
-            
+
             jobs.append(Job(self, job_data, device_name, command))
         return jobs
 
@@ -985,7 +997,7 @@ class NetPulseClient:
 
                 def close(self):
                     self.file_obj.close()
-            
+
             file_cb = None
             if callback and not detach:
 
@@ -993,10 +1005,12 @@ class NetPulseClient:
                     return callback(JobProgress(total=tot, completed=cur, failed=0, running=1))
 
             with open(local_upload_file, "rb") as f:
-                log.debug(f"Calling multipart exec API for device: {device} with file: {local_upload_file}")
-                
+                log.debug(
+                    f"Calling multipart exec API for device: {device} with file: {local_upload_file}"
+                )
+
                 pf = ProgressFile(f, callback=file_cb) if file_cb else f
-                
+
                 resp = self._http.post_multipart(
                     "/device/exec",
                     data={"request": json.dumps(payload)},
@@ -1005,7 +1019,7 @@ class NetPulseClient:
         else:
             log.debug(f"Calling exec API for device: {device}")
             resp = self._http.post("/device/exec", json=payload)
-            
+
         # 0.4.0: resp is JobInResponse
         return Job(client=self, job_data=resp, device_name=device, command=operation)
 
@@ -1166,7 +1180,9 @@ class NetPulseClient:
 
         return JobGroup(jobs=jobs, failed_devices=failed)
 
-    def fetch_staged_file(self, file_id: str, dest_path: str, callback: Optional[Callable] = None) -> None:
+    def fetch_staged_file(
+        self, file_id: str, dest_path: str, callback: Optional[Callable] = None
+    ) -> None:
         """Fetch a staged file from Netpulse storage.
 
         Args:
@@ -1186,7 +1202,7 @@ class NetPulseClient:
             response.raise_for_status()
             total_size = int(response.headers.get("Content-Length", 0))
             downloaded = 0
-            
+
             os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
             with open(dest_path, "wb") as f:
                 for chunk in response.iter_bytes(chunk_size=8192):
@@ -1204,16 +1220,16 @@ class NetPulseClient:
             callback: Progress callback
         """
         import os
-        
+
         full_url = url
         if not url.startswith("http"):
-             full_url = f"{self._http.base_url}/{url.lstrip('/')}"
+            full_url = f"{self._http.base_url}/{url.lstrip('/')}"
 
         with self._http.session.stream("GET", full_url) as response:
             response.raise_for_status()
             total_size = int(response.headers.get("Content-Length", 0))
             downloaded = 0
-            
+
             os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
             with open(dest_path, "wb") as f:
                 for chunk in response.iter_bytes(chunk_size=8192):

@@ -21,16 +21,14 @@ class ConnectionTestResult(BaseModel):
     driver: str = Field(..., description="Driver used for testing")
     timestamp: Optional[datetime] = Field(default=None, description="Test timestamp")
 
-
-    
     # Extra fields for specific drivers
-    remote_version: Optional[str] = Field(default=None, description="Remote system version (Paramiko)")
+    remote_version: Optional[str] = Field(
+        default=None, description="Remote system version (Paramiko)"
+    )
     prompt: Optional[str] = Field(default=None, description="Device prompt (Netmiko)")
     device_type: Optional[str] = Field(default=None, description="Actual device type detected")
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
-
-
 
     def to_dict(self) -> dict:
         """Convert to dictionary"""

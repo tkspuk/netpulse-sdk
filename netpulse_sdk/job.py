@@ -34,10 +34,10 @@ class JobInterface(ABC):
 
     @abstractmethod
     def wait(
-        self, 
-        timeout: Optional[int] = None, 
-        poll_interval: float = 0.5, 
-        callback: Optional[Callable] = None
+        self,
+        timeout: Optional[int] = None,
+        poll_interval: float = 0.5,
+        callback: Optional[Callable] = None,
     ) -> "JobInterface":
         """Wait for job completion"""
         pass
@@ -171,7 +171,7 @@ class Job(JobInterface):
 
     def refresh(self) -> "Job":
         """Refresh job status from API (GET /jobs/{id})
-        
+
         Fetches the latest job data including status and results.
         """
         resp = self._client._http.get(f"/jobs/{self.id}")
@@ -180,13 +180,13 @@ class Job(JobInterface):
         return self
 
     def wait(
-        self, 
-        timeout: Optional[int] = None, 
-        poll_interval: float = 0.5, 
-        callback: Optional[Callable] = None
+        self,
+        timeout: Optional[int] = None,
+        poll_interval: float = 0.5,
+        callback: Optional[Callable] = None,
     ) -> "Job":
         """Wait for job completion by polling GET /jobs/{id}
-        
+
         Args:
             timeout: Maximum wait time in seconds (None for infinite)
             poll_interval: Polling frequency in seconds (default 0.5)
@@ -206,7 +206,7 @@ class Job(JobInterface):
 
             time.sleep(interval)
             self.refresh()
-            
+
             if callback:
                 callback(self.progress())
 
@@ -282,22 +282,24 @@ class Job(JobInterface):
             for idx, item in enumerate(retval):
                 if isinstance(item, dict):
                     # Netpulse 0.4.0+ DriverExecutionResult format
-                    cmd = item.get("command") or (self._command[idx] if idx < len(self._command) else f"command_{idx + 1}")
+                    cmd = item.get("command") or (
+                        self._command[idx] if idx < len(self._command) else f"command_{idx + 1}"
+                    )
                     stdout = str(item.get("stdout", ""))
                     stderr = str(item.get("stderr", ""))
                     exit_status = item.get("exit_status", 0)
                     download_url = item.get("download_url")
                     metadata = item.get("metadata", {})
                     parsed = item.get("parsed")
-                    
+
                     # Set command-specific success
                     cmd_ok = ok
                     if exit_status != 0 or stderr:
                         cmd_ok = False
-                        
+
                     # Effective device name
                     eff_device_name = metadata.get("host") or self._device_name
-                    
+
                     results.append(
                         Result(
                             job_id=self.id,
@@ -355,6 +357,7 @@ class Job(JobInterface):
     def is_done(self) -> bool:
         """Whether job is done (finished, failed, canceled)"""
         from .enums import JobStatus
+
         return self.status in [JobStatus.FINISHED, JobStatus.FAILED, JobStatus.CANCELED]
 
     def __iter__(self) -> Iterator[Result]:
@@ -411,8 +414,6 @@ class Job(JobInterface):
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
 
-
-
     @property
     def all_ok(self) -> bool:
         """Check if all results are successful
@@ -454,8 +455,6 @@ class Job(JobInterface):
         self.wait()
         return {r.command: r.stderr for r in self.results()}
 
-
-
     @property
     def text(self) -> str:
         """Get human-friendly formatted output with command headers
@@ -478,6 +477,7 @@ class Job(JobInterface):
     def to_json(self) -> str:
         """Convert all results to JSON string"""
         import json
+
         return json.dumps([r.to_dict() for r in self.results()], indent=2)
 
     def raise_on_error(self) -> "Job":
@@ -571,10 +571,10 @@ class JobGroup(JobInterface):
         return self
 
     def wait(
-        self, 
-        timeout: Optional[int] = None, 
-        poll_interval: float = 0.5, 
-        callback: Optional[Callable] = None
+        self,
+        timeout: Optional[int] = None,
+        poll_interval: float = 0.5,
+        callback: Optional[Callable] = None,
     ) -> "JobGroup":
         """Wait for all jobs to complete by polling GET /jobs/{id}"""
         start_time = time.time()
@@ -591,7 +591,7 @@ class JobGroup(JobInterface):
 
             time.sleep(interval)
             self.refresh()
-            
+
             if callback:
                 callback(self.progress())
 
@@ -653,7 +653,7 @@ class JobGroup(JobInterface):
 
     def submission_failures(self) -> List[dict]:
         """Get devices that failed at the submission stage
-        
+
         Returns:
             List of {"host": ..., "reason": ...} dicts
         """
@@ -758,8 +758,6 @@ class JobGroup(JobInterface):
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
 
-
-
     @property
     def all_ok(self) -> bool:
         """Check if all results are successful
@@ -828,8 +826,6 @@ class JobGroup(JobInterface):
             result_dict[r.device_name][r.command] = r.stderr
         return result_dict
 
-
-
     @property
     def text(self) -> str:
         """Get consolidated execution logs from all jobs in the group"""
@@ -849,6 +845,7 @@ class JobGroup(JobInterface):
     def to_json(self) -> str:
         """Convert all results to JSON string"""
         import json
+
         return json.dumps([r.to_dict() for r in self.results()], indent=2)
 
     @property
@@ -885,8 +882,6 @@ class JobGroup(JobInterface):
         """Allow natural truthiness: `if group:` returns True when all_ok"""
         self.wait()
         return self.all_ok
-
-
 
     def __repr__(self):
         devices = ", ".join(j.device_name for j in self.jobs[:3])

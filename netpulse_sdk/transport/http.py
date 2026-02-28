@@ -40,13 +40,13 @@ class HTTPClient:
         self.api_key = api_key
         self.api_key_name = api_key_name
         self.timeout = timeout
-        
+
         limits = httpx.Limits(
             max_keepalive_connections=pool_connections,
             max_connections=pool_maxsize,
         )
         transport = httpx.HTTPTransport(retries=max_retries, limits=limits)
-        
+
         self.session = httpx.Client(
             base_url=self.base_url,
             headers={api_key_name: api_key},
@@ -61,7 +61,7 @@ class HTTPClient:
         except httpx.HTTPStatusError as e:
             if response.status_code == 401 or response.status_code == 403:
                 raise AuthError(f"API key authentication failed ({self.api_key_name})") from e
-            
+
             # Try to extract detailed error from JSON body
             try:
                 error_data = response.json()
@@ -74,7 +74,7 @@ class HTTPClient:
                     raise NetworkError(f"API error: {detail}") from e
             except (ValueError, TypeError, KeyError):
                 pass
-                
+
             raise NetworkError(f"HTTP error: {response.status_code}") from e
 
         if response.status_code == 204:
@@ -85,7 +85,9 @@ class HTTPClient:
         except ValueError as e:
             raise NetworkError("Invalid JSON response") from e
 
-    def get(self, path: str, params: Optional[dict] = None, stream: bool = False) -> Union[dict, list, httpx.Response]:
+    def get(
+        self, path: str, params: Optional[dict] = None, stream: bool = False
+    ) -> Union[dict, list, httpx.Response]:
         """Send GET request"""
         try:
             if stream:
@@ -108,9 +110,9 @@ class HTTPClient:
             raise NetworkError(f"Network request failed: {str(e)}") from e
 
     def post_multipart(
-        self, 
-        path: str, 
-        data: Optional[dict] = None, 
+        self,
+        path: str,
+        data: Optional[dict] = None,
         files: Optional[dict] = None,
         content: Any = None,
     ) -> dict:
