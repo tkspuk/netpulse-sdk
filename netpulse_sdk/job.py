@@ -5,7 +5,7 @@ Job and JobGroup implementation
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Iterator, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Union
 
 from .error import Error, JobFailedError
 from .result import JobProgress, Result
@@ -33,7 +33,12 @@ class JobInterface(ABC):
         pass
 
     @abstractmethod
-    def wait(self, timeout: Optional[int] = None) -> "JobInterface":
+    def wait(
+        self, 
+        timeout: Optional[int] = None, 
+        poll_interval: float = 0.5, 
+        callback: Optional[Callable] = None
+    ) -> "JobInterface":
         """Wait for job completion"""
         pass
 
@@ -76,7 +81,7 @@ class Job(JobInterface):
         client: "NetPulseClient",
         job_data: dict,
         device_name: str,
-        commands: Optional[List[str]] = None,
+        command: Optional[List[str]] = None,
     ):
         """Initialize Job
 
@@ -84,12 +89,12 @@ class Job(JobInterface):
             client: NetPulseClient instance
             job_data: JobInResponse data from API
             device_name: Device name (for Result generation)
-            commands: Command list executed (for Result generation)
+            command: Command list executed (for fallback reference)
         """
         self._client = client
         self._data = job_data
         self._device_name = device_name
-        self._commands = commands or []
+        self._command = command or []
 
     @property
     def id(self) -> str:
@@ -97,8 +102,23 @@ class Job(JobInterface):
 
     @property
     def status(self) -> str:
-        """Job status: queued, started, finished, failed, canceled"""
+        """Job status (queued, started, finished, failed, canceled)"""
         return self._data.get("status", "unknown")
+
+    @property
+    def task_id(self) -> Optional[str]:
+        """Detached task ID if detach=True was used"""
+        return self._data.get("task_id")
+
+    @property
+    def device_name(self) -> str:
+        """Target device name"""
+        return self._device_name
+
+    @property
+    def command(self) -> List[str]:
+        """Executed command list"""
+        return self._command
 
     @property
     def duration(self) -> Optional[float]:
@@ -130,6 +150,16 @@ class Job(JobInterface):
         """Job end time"""
         return self._parse_time(self._data.get("ended_at"))
 
+    @property
+    def queue(self) -> Optional[str]:
+        """Queue name the job was processed in"""
+        return self._data.get("queue")
+
+    @property
+    def worker(self) -> Optional[str]:
+        """Worker name that executed the job"""
+        return self._data.get("worker")
+
     def _parse_time(self, time_str: Optional[str]) -> Optional[datetime]:
         """Parse ISO format time string"""
         if not time_str:
@@ -140,30 +170,45 @@ class Job(JobInterface):
             return None
 
     def refresh(self) -> "Job":
-        """Refresh job status"""
-        resp = self._client._http.get("/job", params={"id": self.id})
-        if resp["data"] and len(resp["data"]) > 0:
-            self._data = resp["data"][0]
+        """Refresh job status from API (GET /jobs/{id})
+        
+        Fetches the latest job data including status and results.
+        """
+        resp = self._client._http.get(f"/jobs/{self.id}")
+        # 0.4.0+: resp is JobInResponse
+        self._data = resp
         return self
 
-    def wait(self, timeout: Optional[int] = None, poll_interval: float = 0.5) -> "Job":
-        """Wait for job completion (with exponential backoff)
-
+    def wait(
+        self, 
+        timeout: Optional[int] = None, 
+        poll_interval: float = 0.5, 
+        callback: Optional[Callable] = None
+    ) -> "Job":
+        """Wait for job completion by polling GET /jobs/{id}
+        
         Args:
-            timeout: Timeout in seconds, None for infinite wait
-            poll_interval: Initial polling interval in seconds, default 0.5
+            timeout: Maximum wait time in seconds (None for infinite)
+            poll_interval: Polling frequency in seconds (default 0.5)
+            callback: Optional progress callback function(JobProgress)
         """
         start_time = time.time()
         interval = poll_interval
         max_interval = 5.0
         backoff_factor = 1.5
 
+        if callback:
+            callback(self.progress())
+
         while not self.is_done():
             if timeout and (time.time() - start_time) > timeout:
-                raise JobFailedError(f"Job {self.id} wait timeout", job_id=self.id)
+                raise JobFailedError(f"Job {self.id} timed out", job_id=self.id)
 
             time.sleep(interval)
             self.refresh()
+            
+            if callback:
+                callback(self.progress())
 
             interval = min(interval * backoff_factor, max_interval)
 
@@ -175,7 +220,7 @@ class Job(JobInterface):
             log.warning(f"Job {self.id} status is {self.status}, cannot cancel")
             return
 
-        self._client._http.delete("/job", params={"id": self.id})
+        self._client._http.delete(f"/jobs/{self.id}")
         self.refresh()
 
     def progress(self) -> JobProgress:
@@ -185,7 +230,7 @@ class Job(JobInterface):
         - total = command count
         - completed/failed/running determined by status
         """
-        total = max(len(self._commands), 1)
+        total = max(len(self._command), 1)
 
         if self.status == "finished":
             return JobProgress(total=total, completed=total, failed=0, running=0)
@@ -202,20 +247,7 @@ class Job(JobInterface):
         return self._parse_results()
 
     def _parse_results(self) -> List[Result]:
-        """Parse JobInResponse into standard Result list
-
-        Backend response format:
-        {
-            "result": {
-                "type": 1,  # SUCCESSFUL
-                "retval": {
-                    "show version": "output1",
-                    "show ip int br": "output2"
-                },
-                "error": {"type": "...", "message": "..."}
-            }
-        }
-        """
+        """Convert JobInResponse to list of Result objects"""
         results = []
 
         result_data = self._data.get("result")
@@ -246,56 +278,47 @@ class Job(JobInterface):
                 retryable=self._is_retryable_error(error_data.get("type")),
             )
 
-        if isinstance(retval, dict) and retval:
-            for cmd, output in retval.items():
-                results.append(
-                    Result(
-                        job_id=self.id,
-                        device_id=self._device_name,
-                        device_name=self._device_name,
-                        command=cmd,
-                        stdout=str(output) if ok else "",
-                        stderr="" if ok else str(output),
-                        ok=ok,
-                        duration_ms=duration_ms,
-                        error=error,
+        if isinstance(retval, list) and retval:
+            for idx, item in enumerate(retval):
+                if isinstance(item, dict):
+                    # Netpulse 0.4.0+ DriverExecutionResult format
+                    cmd = item.get("command") or (self._command[idx] if idx < len(self._command) else f"command_{idx + 1}")
+                    stdout = str(item.get("stdout", ""))
+                    stderr = str(item.get("stderr", ""))
+                    exit_status = item.get("exit_status", 0)
+                    download_url = item.get("download_url")
+                    metadata = item.get("metadata", {})
+                    parsed = item.get("parsed")
+                    
+                    # Set command-specific success
+                    cmd_ok = ok
+                    if exit_status != 0 or stderr:
+                        cmd_ok = False
+                        
+                    # Effective device name
+                    eff_device_name = metadata.get("host") or self._device_name
+                    
+                    results.append(
+                        Result(
+                            job_id=self.id,
+                            device_id=eff_device_name,
+                            device_name=eff_device_name,
+                            command=cmd,
+                            stdout=stdout,
+                            stderr=stderr,
+                            ok=cmd_ok,
+                            duration_ms=duration_ms,
+                            exit_status=exit_status,
+                            download_url=download_url,
+                            metadata=metadata,
+                            parsed=parsed,
+                            error=error,
+                        )
                     )
-                )
-        elif isinstance(retval, list) and retval:
-            for idx, output in enumerate(retval):
-                cmd = self._commands[idx] if idx < len(self._commands) else f"command_{idx + 1}"
-                results.append(
-                    Result(
-                        job_id=self.id,
-                        device_id=self._device_name,
-                        device_name=self._device_name,
-                        command=cmd,
-                        stdout=str(output) if ok else "",
-                        stderr="" if ok else str(output),
-                        ok=ok,
-                        duration_ms=duration_ms,
-                        error=error,
-                    )
-                )
-        elif isinstance(retval, str):
-            cmd = self._commands[0] if self._commands else "unknown"
-            results.append(
-                Result(
-                    job_id=self.id,
-                    device_id=self._device_name,
-                    device_name=self._device_name,
-                    command=cmd,
-                    stdout=retval if ok else "",
-                    stderr="" if ok else retval,
-                    ok=ok,
-                    duration_ms=duration_ms,
-                    error=error,
-                )
-            )
 
         # If no results generated yet (empty retval, None, or failed job), create error result
         if not results:
-            commands_to_report = self._commands if self._commands else ["unknown"]
+            commands_to_report = self._command if self._command else ["unknown"]
             for cmd in commands_to_report:
                 error_msg = "Job failed with no output"
                 if error:
@@ -325,47 +348,39 @@ class Job(JobInterface):
         return error_type.lower() in retryable_types
 
     def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
-        """Stream results (with exponential backoff)
-
-        Single job stream waits for completion then returns all results
-
-        Args:
-            poll_interval: Initial polling interval in seconds, default 0.5
-        """
-        interval = poll_interval
-        max_interval = 5.0
-        backoff_factor = 1.5
-
-        while not self.is_done():
-            time.sleep(interval)
-            self.refresh()
-            interval = min(interval * backoff_factor, max_interval)
-
+        """Stream results (blocks until completion)"""
+        self.wait(poll_interval=poll_interval)
         yield from self.results()
 
     def is_done(self) -> bool:
         """Whether job is done (finished, failed, canceled)"""
-        return self.status in ["finished", "failed", "canceled"]
+        from .enums import JobStatus
+        return self.status in [JobStatus.FINISHED, JobStatus.FAILED, JobStatus.CANCELED]
 
     def __iter__(self) -> Iterator[Result]:
         """Support direct iteration, auto-wait and return results"""
         self.wait()
         return iter(self.results())
 
-    def __getitem__(self, key) -> List[Result]:
-        """Support index or device name access
+    def __len__(self) -> int:
+        """Return number of results"""
+        self.wait()
+        return len(self.results())
+
+    def __getitem__(self, key: Union[int, str]) -> Union[Result, List[Result]]:
+        """Access results by index or command pattern
 
         Args:
-            key: Index or device name
+            key: int returns single Result, str returns list of Results matching command pattern
         """
         self.wait()
         results = self.results()
         if isinstance(key, int):
-            return [results[key]]
+            return results[key]
         elif isinstance(key, str):
-            return [r for r in results if r.device_name == key]
-        else:
-            raise TypeError(f"Index must be int or str, not {type(key)}")
+            # Match by device name or command substring
+            return [r for r in results if key == r.device_name or key in r.command]
+        raise TypeError(f"Index must be int or str, not {type(key)}")
 
     def to_dict(self) -> dict:
         """Convert to dictionary
@@ -396,15 +411,7 @@ class Job(JobInterface):
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
 
-    def first(self) -> Optional[Result]:
-        """Get the first result (convenience for single device scenarios)
 
-        Returns:
-            First Result or None if no results
-        """
-        self.wait()
-        results = self.results()
-        return results[0] if results else None
 
     @property
     def all_ok(self) -> bool:
@@ -418,27 +425,97 @@ class Job(JobInterface):
         return len(results) > 0 and all(r.ok for r in results)
 
     @property
-    def outputs(self) -> dict:
-        """Get all outputs as a dictionary
+    def stdout(self) -> str:
+        """Get consolidated standard output (only non-empty results)"""
+        self.wait()
+        return "\n".join(r.stdout for r in self.results() if r.stdout.strip())
 
-        Returns:
-            {device_name: stdout} for single-command jobs
-            {device_name: {command: stdout}} for multi-command jobs
+    @property
+    def stderr(self) -> str:
+        """Get consolidated standard error (only non-empty results)"""
+        self.wait()
+        return "\n".join(r.stderr for r in self.results() if r.stderr.strip())
+
+    @property
+    def parsed(self) -> Dict[str, Any]:
+        """Get parsed data as a dictionary {command: parsed_data}"""
+        self.wait()
+        return {r.command: r.parsed for r in self.results()}
+
+    @property
+    def stdout_dict(self) -> Dict[str, str]:
+        """Get raw standard output mapping {command: stdout}"""
+        self.wait()
+        return {r.command: r.stdout for r in self.results()}
+
+    @property
+    def stderr_dict(self) -> Dict[str, str]:
+        """Get raw standard error mapping {command: stderr}"""
+        self.wait()
+        return {r.command: r.stderr for r in self.results()}
+
+
+
+    @property
+    def text(self) -> str:
+        """Get human-friendly formatted output with command headers
+
+        Unlike stdout (raw concatenation), text adds separators for readability.
         """
         self.wait()
+        sections = []
+        for r in self.results():
+            content = r.stdout if r.stdout.strip() else "(no output)"
+            sections.append(f"--- {r.command} ---\n{content}")
+        return "\n".join(sections)
+
+    @property
+    def failed_commands(self) -> List[str]:
+        """Get a list of commands that failed in this job"""
+        self.wait()
+        return [r.command for r in self.results() if not r.ok]
+
+    def to_json(self) -> str:
+        """Convert all results to JSON string"""
+        import json
+        return json.dumps([r.to_dict() for r in self.results()], indent=2)
+
+    def raise_on_error(self) -> "Job":
+        """Raise JobFailedError if any command failed. Returns self for chaining.
+
+        Usage::
+
+            job = np.run("10.1.1.1", config=cmds).raise_on_error()
+            # If we get here, everything succeeded
+        """
+        self.wait()
+        if not self.all_ok:
+            failed = self.failed_commands
+            raise JobFailedError(
+                f"Job {self.id} failed: {len(failed)} command(s) failed: {failed}",
+                job_id=self.id,
+            )
+        return self
+
+    def summary(self) -> str:
+        """Get a human-readable one-line summary of job execution"""
+        self.wait()
         results = self.results()
-        if len(results) == 1:
-            return {results[0].device_name: results[0].stdout}
-        else:
-            output_dict = {}
-            for r in results:
-                if r.device_name not in output_dict:
-                    output_dict[r.device_name] = {}
-                output_dict[r.device_name][r.command] = r.stdout
-            return output_dict
+        ok_count = sum(1 for r in results if r.ok)
+        total = len(results)
+        dur = f" in {self.duration:.1f}s" if self.duration else ""
+        status = "✓ ALL OK" if self.all_ok else f"✗ {total - ok_count}/{total} FAILED"
+        return f"Job({self.id[:8]}...) {self.device_name} [{status}] {total} cmd(s){dur}"
+
+    def __bool__(self) -> bool:
+        """Allow natural truthiness: `if job:` returns True when all_ok"""
+        self.wait()
+        return self.all_ok
 
     def __repr__(self):
-        return f"Job(id={self.id}, status={self.status})"
+        cmd_count = len(self._command) if self._command else "?"
+        dur = f", duration={self.duration:.1f}s" if self.duration else ""
+        return f"Job(id={self.id[:8]}..., device={self._device_name}, cmds={cmd_count}, status={self.status}{dur})"
 
 
 class JobGroup(JobInterface):
@@ -465,40 +542,48 @@ class JobGroup(JobInterface):
     @property
     def status(self) -> str:
         """Aggregated status:
-        - All finished → finished
-        - Any failed → partial_failed
-        - Any running → running
-        - Other → mixed
+        - All finished -> finished
+        - Any failed -> partial_failed
+        - Any running -> running
+        - Other -> mixed
         """
         statuses = [job.status for job in self.jobs]
+        from .enums import JobStatus
 
-        if all(s == "finished" for s in statuses):
+        if all(s == JobStatus.FINISHED for s in statuses):
             return "finished"
-        elif any(s == "failed" for s in statuses):
+        elif any(s == JobStatus.FAILED for s in statuses):
             return "partial_failed"
-        elif any(s in ["queued", "started"] for s in statuses):
+        elif any(s in [JobStatus.QUEUED, JobStatus.STARTED] for s in statuses):
             return "running"
         else:
             return "mixed"
 
     def refresh(self) -> "JobGroup":
-        """Refresh all job statuses"""
+        """Refresh all job statuses concurrently (GET /jobs/{id} for each job)"""
+        import concurrent.futures
+
         self._results_cache = None
-        for job in self.jobs:
-            job.refresh()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(self.jobs), 50)) as executor:
+            list(executor.map(lambda j: j.refresh(), self.jobs))
+
         return self
 
-    def wait(self, timeout: Optional[int] = None, poll_interval: float = 0.5) -> "JobGroup":
-        """Wait for all jobs to complete (with exponential backoff)
-
-        Args:
-            timeout: Timeout in seconds
-            poll_interval: Initial polling interval in seconds, default 0.5
-        """
+    def wait(
+        self, 
+        timeout: Optional[int] = None, 
+        poll_interval: float = 0.5, 
+        callback: Optional[Callable] = None
+    ) -> "JobGroup":
+        """Wait for all jobs to complete by polling GET /jobs/{id}"""
         start_time = time.time()
         interval = poll_interval
         max_interval = 5.0
         backoff_factor = 1.5
+
+        if callback:
+            callback(self.progress())
 
         while not self.is_done():
             if timeout and (time.time() - start_time) > timeout:
@@ -506,6 +591,9 @@ class JobGroup(JobInterface):
 
             time.sleep(interval)
             self.refresh()
+            
+            if callback:
+                callback(self.progress())
 
             interval = min(interval * backoff_factor, max_interval)
 
@@ -563,18 +651,16 @@ class JobGroup(JobInterface):
 
         return all_results
 
-    def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
-        """Stream results (with exponential backoff)
-
-        Implementation:
-        1. Track returned results (deduplicate by job_id + command)
-        2. Periodically refresh all jobs
-        3. Yield newly completed results
-        4. Continue until all jobs complete
-
-        Args:
-            poll_interval: Initial polling interval in seconds, default 0.5
+    def submission_failures(self) -> List[dict]:
+        """Get devices that failed at the submission stage
+        
+        Returns:
+            List of {"host": ..., "reason": ...} dicts
         """
+        return self.failed_devices
+
+    def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
+        """Stream results as they complete"""
         seen = set()
         interval = poll_interval
         max_interval = 5.0
@@ -605,6 +691,10 @@ class JobGroup(JobInterface):
     def __iter__(self) -> Iterator[Result]:
         """Support direct iteration, auto-stream for batch jobs"""
         return self.stream()
+
+    def __len__(self) -> int:
+        """Return number of jobs in the group"""
+        return len(self.jobs)
 
     def __getitem__(self, device_name: str) -> List[Result]:
         """Support dictionary access by device name
@@ -668,15 +758,7 @@ class JobGroup(JobInterface):
         self.wait()
         return [r for r in self.results() if r.ok and r.has_device_error()]
 
-    def first(self) -> Optional[Result]:
-        """Get the first result (convenience for single device scenarios)
 
-        Returns:
-            First Result or None if no results
-        """
-        self.wait()
-        results = self.results()
-        return results[0] if results else None
 
     @property
     def all_ok(self) -> bool:
@@ -690,25 +772,124 @@ class JobGroup(JobInterface):
         return len(results) > 0 and all(r.ok for r in results)
 
     @property
-    def outputs(self) -> dict:
-        """Get all outputs as a dictionary
-
-        Returns:
-            {device_name: stdout} for single-command jobs
-            {device_name: {command: stdout}} for multi-command jobs
-        """
+    def stdout(self) -> Dict[str, str]:
+        """Get standard output as a dictionary {device_name: consolidated_stdout}"""
         self.wait()
         result_dict = {}
         for r in self.results():
-            if len(self.jobs[0]._commands) <= 1:
-                # Single command: {device: stdout}
-                result_dict[r.device_name] = r.stdout
-            else:
-                # Multi command: {device: {cmd: stdout}}
-                if r.device_name not in result_dict:
-                    result_dict[r.device_name] = {}
-                result_dict[r.device_name][r.command] = r.stdout
+            if r.device_name not in result_dict:
+                result_dict[r.device_name] = []
+            if r.stdout.strip():
+                result_dict[r.device_name].append(r.stdout)
+        return {k: "\n".join(v) for k, v in result_dict.items()}
+
+    @property
+    def stderr(self) -> Dict[str, str]:
+        """Get standard error as a dictionary {device_name: consolidated_stderr}"""
+        self.wait()
+        result_dict = {}
+        for r in self.results():
+            if r.device_name not in result_dict:
+                result_dict[r.device_name] = []
+            if r.stderr.strip():
+                result_dict[r.device_name].append(r.stderr)
+        return {k: "\n".join(v) for k, v in result_dict.items()}
+
+    @property
+    def parsed(self) -> Dict[str, Dict[str, Any]]:
+        """Get all parsed data as a nested dictionary {device_name: {command: parsed_data}}"""
+        self.wait()
+        result_dict = {}
+        for r in self.results():
+            if r.device_name not in result_dict:
+                result_dict[r.device_name] = {}
+            result_dict[r.device_name][r.command] = r.parsed
         return result_dict
 
+    @property
+    def stdout_dict(self) -> Dict[str, Dict[str, str]]:
+        """Get raw standard output as a nested dictionary {device_name: {command: stdout}}"""
+        self.wait()
+        result_dict = {}
+        for r in self.results():
+            if r.device_name not in result_dict:
+                result_dict[r.device_name] = {}
+            result_dict[r.device_name][r.command] = r.stdout
+        return result_dict
+
+    @property
+    def stderr_dict(self) -> Dict[str, Dict[str, str]]:
+        """Get raw standard error as a nested dictionary {device_name: {command: stderr}}"""
+        self.wait()
+        result_dict = {}
+        for r in self.results():
+            if r.device_name not in result_dict:
+                result_dict[r.device_name] = {}
+            result_dict[r.device_name][r.command] = r.stderr
+        return result_dict
+
+
+
+    @property
+    def text(self) -> str:
+        """Get consolidated execution logs from all jobs in the group"""
+        self.wait()
+        sections = []
+        for job in self.jobs:
+            header = f"=== Device: {job.device_name} (Job: {job.id}) ==="
+            sections.append(f"{header}\n{job.text}")
+        return "\n\n".join(sections)
+
+    @property
+    def failed_commands(self) -> Dict[str, List[str]]:
+        """Get a dictionary mapping device names to their failed commands"""
+        self.wait()
+        return {j.device_name: j.failed_commands for j in self.jobs if not j.all_ok}
+
+    def to_json(self) -> str:
+        """Convert all results to JSON string"""
+        import json
+        return json.dumps([r.to_dict() for r in self.results()], indent=2)
+
+    @property
+    def devices(self) -> List[str]:
+        """Get list of all device names in this group"""
+        return [j.device_name for j in self.jobs]
+
+    def raise_on_error(self) -> "JobGroup":
+        """Raise JobFailedError if any device had failures. Returns self for chaining.
+
+        Usage::
+
+            group = np.run(devices, command="show version").raise_on_error()
+            # If we get here, all devices succeeded
+        """
+        self.wait()
+        if not self.all_ok:
+            failed = self.failed_commands
+            failed_devices = list(failed.keys())
+            raise JobFailedError(
+                f"JobGroup failed: {len(failed_devices)} device(s) had errors: {failed_devices}",
+            )
+        return self
+
+    def summary(self) -> str:
+        """Get a human-readable multi-line summary of group execution"""
+        self.wait()
+        lines = [f"JobGroup: {len(self.jobs)} device(s), status={self.status}"]
+        for job in self.jobs:
+            lines.append(f"  {job.summary()}")
+        return "\n".join(lines)
+
+    def __bool__(self) -> bool:
+        """Allow natural truthiness: `if group:` returns True when all_ok"""
+        self.wait()
+        return self.all_ok
+
+
+
     def __repr__(self):
-        return f"JobGroup(jobs={len(self.jobs)}, status={self.status})"
+        devices = ", ".join(j.device_name for j in self.jobs[:3])
+        if len(self.jobs) > 3:
+            devices += f", ... (+{len(self.jobs) - 3})"
+        return f"JobGroup(devices=[{devices}], jobs={len(self.jobs)}, status={self.status})"

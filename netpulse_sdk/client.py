@@ -4,11 +4,11 @@ NetPulse client
 
 import logging
 import os
-from typing import List, Literal, Optional, Union
+from typing import Callable, List, Literal, Optional, Union
 
 from .error import NetPulseError
 from .job import Job, JobGroup
-from .result import ConnectionTestResult
+from .result import ConnectionTestResult, JobProgress
 from .transport import HTTPClient
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,9 @@ class NetPulseClient:
         max_retries: int = 3,
         profile: Optional[str] = None,
         config_path: Optional[str] = None,
+        enable_mode: bool = False,
+        save: bool = False,
+        api_key_name: Optional[str] = None,
     ):
         """Initialize NetPulse client
 
@@ -49,6 +52,9 @@ class NetPulseClient:
             max_retries: HTTP request auto-retry count (default 3)
             profile: Config profile name (default uses 'default' profile)
             config_path: Explicit config file path (optional)
+            enable_mode: Default enable mode (Netmiko)
+            save: Default save mode (Netmiko)
+            api_key_name: API key header name (default: X-API-KEY)
         """
         # Load config file
         from .config import load_config, get_config_value
@@ -61,6 +67,9 @@ class NetPulseClient:
         )
         api_key = (
             api_key or get_config_value(config, "api_key") or os.environ.get("NETPULSE_API_KEY")
+        )
+        api_key_name = (
+            api_key_name or get_config_value(config, "api_key_name") or os.environ.get("NETPULSE_API_KEY_NAME") or "X-API-KEY"
         )
         timeout = timeout if timeout != 30 else get_config_value(config, "timeout", 30)
         driver = driver if driver != "netmiko" else get_config_value(config, "driver", "netmiko")
@@ -86,23 +95,14 @@ class NetPulseClient:
 
         # Improved error messages
         if not base_url:
-            raise ValueError(
-                "base_url is required.\n"
-                "  → Set via parameter: NetPulseClient(base_url='http://...')\n"
-                "  → Or config file: netpulse.yaml with 'base_url' key\n"
-                "  → Or env var: export NETPULSE_URL=http://..."
-            )
+            raise ValueError("base_url is required (pass to client, or set NETPULSE_URL)")
         if not api_key:
-            raise ValueError(
-                "api_key is required.\n"
-                "  → Set via parameter: NetPulseClient(api_key='...')\n"
-                "  → Or config file: netpulse.yaml with 'api_key' key\n"
-                "  → Or env var: export NETPULSE_API_KEY=..."
-            )
+            raise ValueError("api_key is required (pass to client, or set NETPULSE_API_KEY)")
 
         self._http = HTTPClient(
             base_url=base_url,
             api_key=api_key,
+            api_key_name=api_key_name,
             timeout=timeout,
             pool_connections=pool_connections,
             pool_maxsize=pool_maxsize,
@@ -110,6 +110,8 @@ class NetPulseClient:
         )
         self.driver = driver
         self.default_connection_args = default_connection_args or {}
+        self.enable_mode = enable_mode
+        self.save = save
 
     def __enter__(self) -> "NetPulseClient":
         """Context manager entry"""
@@ -141,6 +143,7 @@ class NetPulseClient:
         device: str,
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
+        credential: Optional[dict] = None,
     ) -> "ConnectionTestResult":
         """Test device connection
 
@@ -165,24 +168,35 @@ class NetPulseClient:
             "driver": use_driver,
             "connection_args": conn_args,
         }
+        if credential:
+            payload["credential"] = credential
 
         try:
             resp = self._http.post("/device/test", json=payload)
-            data = resp.get("data", {})
-
+            # 0.4.0+: resp is ConnectionTestResponse
+            
+            # Extract standard fields
+            ts_str = resp.get("timestamp")
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now()
+            
+            # Flatten 0.4.0+ 'result' object for better SDK experience
+            result_inner = resp.get("result") or {}
+            extra_data = {k: v for k, v in resp.items() if k not in ["success", "latency", "error", "timestamp", "result"]}
+            if isinstance(result_inner, dict):
+                extra_data.update(result_inner)
+            
             return ConnectionTestResult(
-                success=data.get("success", False),
+                ok=resp.get("success", False),
                 host=device,
-                latency=data.get("latency"),
-                error=data.get("error"),
+                latency=resp.get("latency"),
+                error=resp.get("error"),
                 driver=use_driver,
-                timestamp=datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
-                if data.get("timestamp")
-                else datetime.now(),
+                timestamp=ts,
+                **extra_data
             )
         except Exception as e:
             return ConnectionTestResult(
-                success=False,
+                ok=False,
                 host=device,
                 latency=None,
                 error=str(e),
@@ -195,6 +209,7 @@ class NetPulseClient:
         devices: List[str],
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
+        credential: Optional[dict] = None,
     ) -> List["ConnectionTestResult"]:
         """Test multiple device connections
 
@@ -202,14 +217,43 @@ class NetPulseClient:
             devices: List of device IPs/hostnames
             connection_args: Connection arguments (overrides default_connection_args)
             driver: Driver name (overrides default driver)
+            credential: Vault credential reference
 
         Returns:
             List of ConnectionTestResult
         """
-        return [
-            self.test_connection(device, connection_args=connection_args, driver=driver)
-            for device in devices
-        ]
+        import concurrent.futures
+
+        results = [None] * len(devices)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(devices), 50)) as executor:
+            future_to_index = {
+                executor.submit(
+                    self.test_connection, 
+                    device, 
+                    connection_args=connection_args, 
+                    driver=driver,
+                    credential=credential
+                ): idx
+                for idx, device in enumerate(devices)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    # Create a failed result if something crashed
+                    from datetime import datetime
+                    from .result import ConnectionTestResult
+                    results[idx] = ConnectionTestResult(
+                        ok=False,
+                        host=devices[idx],
+                        error=str(e),
+                        driver=driver or self.driver or "unknown",
+                        timestamp=datetime.now(),
+                    )
+            
+        return results
 
     def run(
         self,
@@ -218,6 +262,7 @@ class NetPulseClient:
         config: Union[List[str], str] = None,
         mode: Literal["auto", "exec", "bulk"] = "auto",
         ttl: int = 300,
+        execution_timeout: Optional[int] = None,
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
         driver_args: Optional[dict] = None,
@@ -227,151 +272,96 @@ class NetPulseClient:
         queue_strategy: Optional[Literal["fifo", "pinned"]] = None,
         result_ttl: Optional[int] = None,
         webhook: Optional[dict] = None,
+        file_transfer: Optional[dict] = None,
+        detach: bool = False,
+        push_interval: Optional[int] = None,
+        staged_file_id: Optional[str] = None,
+        local_upload_file: Optional[str] = None,
+        enable_mode: Optional[bool] = None,
+        save: Optional[bool] = None,
+        callback: Optional[Callable] = None,
     ) -> Job:
-        """Execute command or configuration
+        """Execute operations on devices (API Mode: config or command)
 
-        Args:
-            devices: Device list or single device (IP/hostname or connection_args dict)
-            command: Command list or single command (query commands, mutually exclusive with config)
-            config: Configuration command list or single command (mutually exclusive with command)
-            mode: Execution mode (auto, exec for single device, bulk for multiple devices)
-            ttl: Job timeout in seconds
-            connection_args: Connection arguments (overrides default_connection_args)
-            driver: Driver name (overrides default driver)
-            driver_args: Driver-specific parameters (read_timeout, delay_factor, etc.)
-            credential: Vault credential reference (name, ref, mount, field_mapping, etc.)
-            rendering: Template rendering configuration (name, template, context)
-            parsing: Output parsing configuration (name, template, context)
-            queue_strategy: Queue strategy (fifo or pinned)
-            result_ttl: Result retention time in seconds (60-604800)
-            webhook: Webhook callback configuration (url, method, headers, etc.)
+        This is the primary method for executing tasks. It automatically detects 
+        whether to use 'config' or 'command' mode based on the input.
 
         Returns:
             Job or JobGroup instance
         """
+        was_list = isinstance(devices, list)
         devices = [devices] if isinstance(devices, str) else devices
 
         if command is not None and config is not None:
             raise ValueError("command and config are mutually exclusive")
-        if command is None and config is None:
-            raise ValueError("Either command or config must be specified")
 
-        operation = command if command is not None else config
-        operation = [operation] if isinstance(operation, str) else operation
-        operation_type = "command" if command is not None else "config"
-
-        if not devices:
-            raise ValueError("devices cannot be empty")
-
-        conn_args = {**self.default_connection_args}
-        if connection_args:
-            conn_args.update(connection_args)
-
-        if driver_args is None:
-            driver_args = self.DEFAULT_DRIVER_ARGS
-
-        api_mode = self._select_api(devices, mode)
-        use_driver = driver or self.driver
-
-        if api_mode == "exec":
-            device = devices[0] if isinstance(devices[0], str) else devices[0].get("host")
-            return self._call_exec_api(
-                device=device,
-                operation=operation,
-                operation_type=operation_type,
-                ttl=ttl,
-                connection_args=conn_args,
-                driver=use_driver,
-                driver_args=driver_args,
-                credential=credential,
-                rendering=rendering,
-                parsing=parsing,
-                queue_strategy=queue_strategy,
-                result_ttl=result_ttl,
-                webhook=webhook,
-            )
+        # Smart detection of operation type
+        if config is not None:
+            operation = config
+            operation_type = "config"
         else:
-            return self._call_bulk_api(
-                devices=devices,
-                operation=operation,
-                operation_type=operation_type,
-                ttl=ttl,
-                connection_args=conn_args,
-                driver=use_driver,
-                driver_args=driver_args,
-                credential=credential,
-                rendering=rendering,
-                parsing=parsing,
-                queue_strategy=queue_strategy,
-                result_ttl=result_ttl,
-                webhook=webhook,
-            )
+            operation = command
+            operation_type = "command"
 
-    def render_template(
-        self, template: str, context: Optional[dict] = None, name: str = "jinja2"
-    ) -> str:
-        """Render a template
+        job = self._execute(
+            devices=devices,
+            operation=operation,
+            operation_type=operation_type,
+            mode=mode,
+            ttl=ttl,
+            execution_timeout=execution_timeout,
+            connection_args=connection_args,
+            driver=driver,
+            driver_args=driver_args,
+            credential=credential,
+            rendering=rendering,
+            parsing=parsing,
+            queue_strategy=queue_strategy,
+            result_ttl=result_ttl,
+            webhook=webhook,
+            file_transfer=file_transfer,
+            detach=detach,
+            push_interval=push_interval,
+            staged_file_id=staged_file_id,
+            local_upload_file=local_upload_file,
+            enable_mode=enable_mode if enable_mode is not None else self.enable_mode,
+            save=save if save is not None else self.save,
+            return_group=was_list or mode == "bulk",
+        )
 
-        Args:
-            template: Template content
-            context: Variables for the template
-            name: Renderer name (default: "jinja2")
+        if callback and not detach:
+            job.wait(callback=callback)
 
-        Returns:
-            Rendered string
-        """
-        payload = {
-            "template": template,
-            "context": context,
-            "name": name,
-        }
-        # Remove None values
-        payload = {k: v for k, v in payload.items() if v is not None}
-
-        resp = self._http.post("/template/render", json=payload)
-        return resp.get("data", "")
-
-    def parse_template(
-        self, template: str, context: str, name: str = "textfsm"
-    ) -> Union[List[dict], dict]:
-        """Parse text using a template
-
-        Args:
-            template: Template content (e.g. TextFSM)
-            context: Text to parse
-            name: Parser name (default: "textfsm")
-
-        Returns:
-            Parsed data (list of dicts or dict)
-        """
-        payload = {
-            "template": template,
-            "context": context,
-            "name": name,
-        }
-        # Remove None values
-        payload = {k: v for k, v in payload.items() if v is not None}
-
-        resp = self._http.post("/template/parse", json=payload)
-        return resp.get("data", [])
+        return job
 
     def collect(
         self,
         devices: Union[List[str], str, List[dict]],
-        command: Union[List[str], str],
+        command: Union[List[str], str, None] = None,
         ttl: int = 300,
+        execution_timeout: Optional[int] = None,
         connection_args: Optional[dict] = None,
         driver: Optional[str] = None,
         driver_args: Optional[dict] = None,
         credential: Optional[dict] = None,
+        rendering: Optional[dict] = None,
         parsing: Optional[dict] = None,
         queue_strategy: Optional[Literal["fifo", "pinned"]] = None,
         result_ttl: Optional[int] = None,
         webhook: Optional[dict] = None,
+        file_transfer: Optional[dict] = None,
+        detach: bool = False,
+        push_interval: Optional[int] = None,
+        staged_file_id: Optional[str] = None,
+        local_upload_file: Optional[str] = None,
+        enable_mode: bool = False,
+        save: bool = False,
+        callback: Optional[Callable] = None,
     ) -> Job:
-        """Read-only collection (semantic wrapper)
+        """Information Gathering and Audit (API Mode: command)
 
-        Equivalent to run(), but explicitly marked as read-only operation
+        Strictly for READ-ONLY operations. It forces save=False and enable_mode=False
+        by default for safety. Use this for monitoring, audits, and data extraction.
 
         Args:
             devices: Device list or single device
@@ -381,61 +371,267 @@ class NetPulseClient:
             driver: Driver name
             driver_args: Driver-specific parameters
             credential: Vault credential reference (name is required)
+            rendering: Template rendering configuration
             parsing: Output parsing configuration
             queue_strategy: Queue strategy
             result_ttl: Result retention time (60-604800 seconds)
             webhook: Webhook callback configuration
+            file_transfer: File transfer configuration
+            detach: Run command in background
+            push_interval: Interval for incremental webhook log pushes
+            staged_file_id: Staged file id
+            local_upload_file: Local file to upload
+            enable_mode: Default False. Enter privileged mode before execution.
+            save: Default False. Save configuration after execution.
+            callback: Progress callback function(progress_obj)
         """
-        return self.run(
+        was_list = isinstance(devices, list)
+        job = self._execute(
             devices=devices,
-            command=command,
-            mode="auto",
+            operation=command,
+            operation_type="command",
             ttl=ttl,
+            execution_timeout=execution_timeout,
             connection_args=connection_args,
             driver=driver,
             driver_args=driver_args,
             credential=credential,
+            rendering=rendering,
             parsing=parsing,
             queue_strategy=queue_strategy,
             result_ttl=result_ttl,
             webhook=webhook,
+            file_transfer=file_transfer,
+            detach=detach,
+            push_interval=push_interval,
+            staged_file_id=staged_file_id,
+            local_upload_file=local_upload_file,
+            enable_mode=enable_mode,
+            save=save,
+            return_group=was_list,
         )
 
-    def get_job(self, job_id: str) -> Job:
-        """Get Job by ID
+        if callback and not detach:
+            job.wait(callback=callback)
+
+        return job
+
+    def _execute(
+        self,
+        devices: Union[List[str], str, List[dict]],
+        operation: Union[List[str], str] = None,
+        operation_type: Literal["command", "config"] = "command",
+        mode: Literal["auto", "exec", "bulk"] = "auto",
+        ttl: int = 300,
+        execution_timeout: Optional[int] = None,
+        connection_args: Optional[dict] = None,
+        driver: Optional[str] = None,
+        driver_args: Optional[dict] = None,
+        credential: Optional[dict] = None,
+        rendering: Optional[dict] = None,
+        parsing: Optional[dict] = None,
+        queue_strategy: Optional[Literal["fifo", "pinned"]] = None,
+        result_ttl: Optional[int] = None,
+        webhook: Optional[dict] = None,
+        file_transfer: Optional[dict] = None,
+        detach: bool = False,
+        push_interval: Optional[int] = None,
+        staged_file_id: Optional[str] = None,
+        local_upload_file: Optional[str] = None,
+        enable_mode: Optional[bool] = None,
+        save: Optional[bool] = None,
+        callback: Optional[Callable] = None,
+        return_group: bool = False,
+    ) -> Union[Job, JobGroup]:
+        """Internal execute dispatcher"""
+        # 1. Normalize devices
+        if isinstance(devices, (str, dict)):
+            devices = [devices]
+
+        # 2. Extract driver and connection_args from first device if not provided
+        if not driver or not connection_args:
+            first_device = devices[0]
+            driver = driver or self.driver
+            if isinstance(first_device, dict):
+                driver = driver or first_device.get("driver")
+                connection_args = connection_args or first_device.get("connection_args")
+            
+            # Fallback to defaults
+            connection_args = connection_args or self.default_connection_args
+
+        if not driver:
+            raise ValueError("Driver must be specified if no default driver is set")
+
+        # 3. Normalize operation
+        if isinstance(operation, str):
+            operation = [operation]
+
+        # 4. Use effective enable_mode and save
+        eff_enable_mode = enable_mode if enable_mode is not None else self.enable_mode
+        eff_save = save if save is not None else self.save
+
+        # 5. Handle directory-style remote_path for uploads
+        if local_upload_file and file_transfer and file_transfer.get("operation") == "upload":
+            remote_path = file_transfer.get("remote_path")
+            if remote_path and (remote_path.endswith("/") or remote_path.endswith("\\")):
+                import os
+                filename = os.path.basename(local_upload_file)
+                # Join path and ensure forward slashes for cross-platform compatibility
+                full_remote_path = os.path.join(remote_path, filename).replace("\\", "/")
+                file_transfer["remote_path"] = full_remote_path
+
+        # 6. Use Bulk API if multiple devices, otherwise Use Exec API
+        api_type = self._select_api(devices, mode)
+        if api_type == "bulk":
+            return self._call_bulk_api(
+                devices=devices,
+                operation=operation,
+                operation_type=operation_type,
+                ttl=ttl,
+                connection_args=connection_args or {},
+                driver=driver,
+                driver_args=driver_args,
+                credential=credential,
+                rendering=rendering,
+                parsing=parsing,
+                queue_strategy=queue_strategy,
+                result_ttl=result_ttl,
+                webhook=webhook,
+                file_transfer=file_transfer,
+                detach=detach,
+                push_interval=push_interval,
+                staged_file_id=staged_file_id,
+                enable_mode=eff_enable_mode,
+                save=eff_save,
+                callback=callback,
+            )
+        else:
+            device = devices[0]
+            device_host = device if isinstance(device, str) else device.get("host")
+            job = self._call_exec_api(
+                device=device_host,
+                operation=operation,
+                operation_type=operation_type,
+                ttl=ttl,
+                execution_timeout=execution_timeout,
+                connection_args=connection_args or {},
+                driver=driver,
+                driver_args=driver_args,
+                credential=credential,
+                rendering=rendering,
+                parsing=parsing,
+                queue_strategy=queue_strategy,
+                result_ttl=result_ttl,
+                webhook=webhook,
+                file_transfer=file_transfer,
+                detach=detach,
+                push_interval=push_interval,
+                staged_file_id=staged_file_id,
+                enable_mode=eff_enable_mode,
+                save=eff_save,
+                local_upload_file=local_upload_file,
+                callback=callback,
+            )
+            if return_group:
+                from .job import JobGroup
+                return JobGroup(jobs=[job])
+            return job
+
+    def render_template(
+        self,
+        template: str,
+        context: dict,
+        name: str = "jinja2",
+        **kwargs,
+    ) -> str:
+        """Render a configuration template
 
         Args:
-            job_id: Job ID
-
-        Returns:
-            Job instance
+            template: Template content or reference
+            context: Template context (variables)
+            name: Renderer engine name (default: jinja2)
+            **kwargs: Additional parameters for specific renderers
         """
-        resp = self._http.get("/job", params={"id": job_id})
-        if not resp["data"] or len(resp["data"]) == 0:
-            raise NetPulseError(f"Job {job_id} not found")
+        payload = {
+            "name": name,
+            "template": template,
+            "context": context,
+            **kwargs,
+        }
+        resp = self._http.post("/template/render", json=payload)
+        return resp.get("rendered", "")
 
-        job_data = resp["data"][0]
-        return Job(client=self, job_data=job_data, device_name="unknown", commands=[])
+    def parse_template(
+        self,
+        output: str,
+        name: str = "ttp",
+        template: Optional[str] = None,
+        **kwargs,
+    ) -> Union[dict, list]:
+        """Parse device output using templates
+
+        Args:
+            output: Raw device output string
+            name: Parser engine name (default: ttp)
+            template: Optional template content or reference
+            **kwargs: Additional parameters like use_ntc_template, ttp_template_args, etc.
+        """
+        payload = {
+            "name": name,
+            "output": output,
+            **kwargs,
+        }
+        if template:
+            payload["template"] = template
+            
+        return self._http.post("/template/parse", json=payload)
+
+    def get_job(self, job_id: str) -> Job:
+        """Get Job by ID (GET /jobs/{id})
+        
+        Args:
+            job_id: Unique job identifier
+        """
+        resp = self._http.get(f"/jobs/{job_id}")
+        
+        # 0.4.0+: Use device_name and command from response if available
+        device_name = resp.get("device_name")
+        command = resp.get("command")
+        
+        # Fallback to results if not in top level
+        if not device_name or not command:
+            result = resp.get("result")
+            if result and result.get("retval"):
+                first_res = result["retval"][0]
+                if not device_name:
+                    device_name = (
+                        first_res.get("metadata", {}).get("host") 
+                        or first_res.get("device_name")
+                        or "unknown"
+                    )
+                if not command:
+                    command = [r.get("command") for r in result["retval"] if r.get("command")]
+            
+        return Job(client=self, job_data=resp, device_name=device_name or "unknown", command=command)
 
     def list_jobs(
         self,
-        queue: Optional[str] = None,
+        limit: int = 100,
         status: Optional[str] = None,
+        queue: Optional[str] = None,
         node: Optional[str] = None,
         host: Optional[str] = None,
     ) -> List[Job]:
-        """List jobs with optional filters
+        """List jobs with optional filters (GET /jobs)
 
         Args:
-            queue: Filter by queue name (e.g., 'netmiko', 'napalm')
-            status: Filter by job status ('queued', 'started', 'finished', 'failed')
+            limit: Maximum number of jobs to return
+            queue: Filter by queue name
+            status: Filter by job status
             node: Filter by node name
             host: Filter by pinned host name
-
-        Returns:
-            List of Job instances
         """
-        params = {}
+        params = {"limit": limit}
         if queue:
             params["queue"] = queue
         if status:
@@ -445,26 +641,27 @@ class NetPulseClient:
         if host:
             params["host"] = host
 
-        resp = self._http.get("/job", params=params if params else None)
-        jobs_data = resp.get("data", []) or []
-
+        resp = self._http.get("/jobs", params=params if params else None)
+        # 0.4.0+: resp is List[JobInResponse]
         return [
-            Job(client=self, job_data=job_data, device_name="unknown", commands=[])
-            for job_data in jobs_data
+            Job(
+                client=self, 
+                job_data=job_data, 
+                device_name=job_data.get("device_name") or "unknown", 
+                command=job_data.get("command")
+            )
+            for job_data in resp
         ]
 
     def cancel_job(self, job_id: str) -> bool:
-        """Cancel a queued job
-
+        """Cancel/Delete a job (DELETE /jobs/{id})
+        
         Args:
             job_id: Job ID to cancel
-
-        Returns:
-            True if cancelled successfully
         """
-        resp = self._http.delete("/job", params={"id": job_id})
-        cancelled = resp.get("data", []) or []
-        return job_id in cancelled
+        self._http.delete(f"/jobs/{job_id}")
+        # 0.3.x/0.4.0 delete returns success info, commonly 204 or a simple dict
+        return True
 
     def cancel_jobs(
         self,
@@ -486,8 +683,8 @@ class NetPulseClient:
         if host:
             params["host"] = host
 
-        resp = self._http.delete("/job", params=params if params else None)
-        return resp.get("data", []) or []
+        resp = self._http.delete("/jobs", params=params if params else None)
+        return resp
 
     def list_workers(
         self,
@@ -522,8 +719,8 @@ class NetPulseClient:
         if host:
             params["host"] = host
 
-        resp = self._http.get("/worker", params=params if params else None)
-        return resp.get("data", []) or []
+        resp = self._http.get("/workers", params=params if params else None)
+        return resp
 
     def delete_workers(
         self,
@@ -543,9 +740,11 @@ class NetPulseClient:
         Returns:
             List of deleted worker names
         """
-        params = {}
         if name:
-            params["name"] = name
+            resp = self._http.delete(f"/workers/{name}")
+            return [name] if resp else []
+            
+        params = {}
         if queue:
             params["queue"] = queue
         if node:
@@ -553,8 +752,116 @@ class NetPulseClient:
         if host:
             params["host"] = host
 
-        resp = self._http.delete("/worker", params=params if params else None)
-        return resp.get("data", []) or []
+        resp = self._http.delete("/workers", params=params if params else None)
+        return resp
+
+    # =========================================================================
+    # Detached Tasks (Task Recovery)
+    # =========================================================================
+
+    def list_detached_tasks(self, status: Optional[str] = None) -> List[dict]:
+        """List all active detached tasks in the server registry
+        
+        Args:
+            status: Optional status filter (running, completed, launching)
+            
+        Returns:
+            List of detached task metadata dictionaries
+        """
+        params = {}
+        if status:
+            params["status"] = status
+        return self._http.get("/detached-tasks", params=params)
+
+    def get_detached_task(self, task_id: str, offset: Optional[int] = None) -> dict:
+        """Query a detached task's status and logs
+        
+        Args:
+            task_id: Detached task ID
+            offset: Byte offset to read logs from
+            
+        Returns:
+            Dictionary containing the latest output and task metadata
+        """
+        params = {}
+        if offset is not None:
+            params["offset"] = offset
+        return self._http.get(f"/detached-tasks/{task_id}", params=params)
+
+    def cancel_detached_task(self, task_id: str) -> bool:
+        """Terminate a detached task on the remote host
+        
+        Args:
+            task_id: Detached task ID
+            
+        Returns:
+            True if cancelled successfully
+        """
+        self._http.delete(f"/detached-tasks/{task_id}")
+        return True
+
+    def discover_detached_tasks(
+        self, 
+        device: str, 
+        driver: str = "paramiko",
+        connection_args: Optional[dict] = None, 
+        driver_args: Optional[dict] = None,
+        credential: Optional[dict] = None
+    ) -> List[dict]:
+        """Scan a device for background tasks and sync them into the server registry
+        
+        Args:
+            device: Device IP/hostname
+            driver: Driver name (default: paramiko)
+            connection_args: Connection arguments
+            driver_args: Optional driver arguments
+            credential: Optional credential configuration
+            
+        Returns:
+            List of newly discovered task metadata
+        """
+        payload = {
+            "driver": driver,
+            "connection_args": {
+                **(connection_args or self.default_connection_args),
+                "host": device,
+            },
+        }
+        if driver_args:
+            payload["driver_args"] = driver_args
+        if credential:
+            payload["credential"] = credential
+
+        return self._http.post("/detached-tasks/discover", json=payload)
+
+    def discover_jobs(self, status: str = "running") -> List[Job]:
+        """Recover Job objects for existing detached tasks"""
+        tasks = self.list_detached_tasks(status=status)
+        jobs = []
+        for task in tasks:
+            task_id = task.get("task_id")
+            if not task_id:
+                continue
+            
+            job_data = {
+                "id": f"task_{task_id}",
+                "status": "started" if task.get("status") == "running" else "finished",
+                "task_id": task_id,
+                "created_at": task.get("created_at"),
+                "command": task.get("command"),
+                "driver": task.get("driver"),
+            }
+            
+            device_name = task.get("metadata", {}).get("host") or "recovered_host"
+            command = [task.get("command")] if task.get("command") else []
+            
+            jobs.append(Job(self, job_data, device_name, command))
+        return jobs
+
+    def get_health(self) -> dict:
+        """Get system health status"""
+        resp = self._http.get("/health")
+        return resp
 
     def _select_api(
         self, devices: List[str], mode: Literal["auto", "exec", "bulk"]
@@ -579,36 +886,9 @@ class NetPulseClient:
         else:
             return "bulk"
 
-    def _add_optional_params(
-        self,
-        payload: dict,
-        driver_args: Optional[dict] = None,
-        credential: Optional[dict] = None,
-        rendering: Optional[dict] = None,
-        parsing: Optional[dict] = None,
-        queue_strategy: Optional[str] = None,
-        result_ttl: Optional[int] = None,
-        webhook: Optional[dict] = None,
-    ) -> dict:
-        """Add optional parameters to payload if they are not None
-
-        Args:
-            payload: Base payload dictionary
-            **kwargs: Optional parameters to add
-
-        Returns:
-            Updated payload dictionary
-        """
-        optional_params = {
-            "driver_args": driver_args,
-            "credential": credential,
-            "rendering": rendering,
-            "parsing": parsing,
-            "queue_strategy": queue_strategy,
-            "result_ttl": result_ttl,
-            "webhook": webhook,
-        }
-        for key, value in optional_params.items():
+    def _add_optional_params(self, payload: dict, **kwargs) -> dict:
+        """Add non-None kwargs to payload"""
+        for key, value in kwargs.items():
             if value is not None:
                 payload[key] = value
         return payload
@@ -621,6 +901,7 @@ class NetPulseClient:
         ttl: int,
         connection_args: dict,
         driver: str,
+        execution_timeout: Optional[int] = None,
         driver_args: Optional[dict] = None,
         credential: Optional[dict] = None,
         rendering: Optional[dict] = None,
@@ -628,6 +909,14 @@ class NetPulseClient:
         queue_strategy: Optional[str] = None,
         result_ttl: Optional[int] = None,
         webhook: Optional[dict] = None,
+        file_transfer: Optional[dict] = None,
+        detach: Optional[bool] = None,
+        push_interval: Optional[int] = None,
+        staged_file_id: Optional[str] = None,
+        local_upload_file: Optional[str] = None,
+        enable_mode: Optional[bool] = None,
+        save: Optional[bool] = None,
+        callback: Optional[Callable] = None,
     ) -> Job:
         """Call POST /device/exec
 
@@ -642,6 +931,9 @@ class NetPulseClient:
             operation_type: operation,
             "ttl": ttl,
         }
+        if execution_timeout is not None:
+            payload["execution_timeout"] = execution_timeout
+
         self._add_optional_params(
             payload,
             driver_args=driver_args,
@@ -651,13 +943,71 @@ class NetPulseClient:
             queue_strategy=queue_strategy,
             result_ttl=result_ttl,
             webhook=webhook,
+            file_transfer=file_transfer,
+            detach=detach,
+            push_interval=push_interval,
+            staged_file_id=staged_file_id,
+            enable_mode=enable_mode,
+            save=save,
         )
 
-        log.debug(f"Calling exec API for device: {device}")
-        resp = self._http.post("/device/exec", json=payload)
-        job_data = resp["data"]
+        if local_upload_file is not None:
+            import json
+            import os
 
-        return Job(client=self, job_data=job_data, device_name=device, commands=operation)
+            if not os.path.exists(local_upload_file):
+                raise ValueError(f"File {local_upload_file} does not exist")
+
+            # Wrap file for progress tracking
+            class ProgressFile:
+                def __init__(self, file_obj, callback=None):
+                    self.file_obj = file_obj
+                    self.callback = callback
+                    self.size = os.path.getsize(local_upload_file)
+                    self.read_count = 0
+
+                def read(self, size=-1):
+                    data = self.file_obj.read(size)
+                    if data:
+                        self.read_count += len(data)
+                        if self.callback:
+                            self.callback(self.read_count, self.size)
+                    return data
+
+                def __iter__(self):
+                    return self
+
+                def __next__(self):
+                    data = self.read(8192)
+                    if not data:
+                        raise StopIteration
+                    return data
+
+                def close(self):
+                    self.file_obj.close()
+            
+            file_cb = None
+            if callback and not detach:
+
+                def file_cb(cur, tot):
+                    return callback(JobProgress(total=tot, completed=cur, failed=0, running=1))
+
+            with open(local_upload_file, "rb") as f:
+                log.debug(f"Calling multipart exec API for device: {device} with file: {local_upload_file}")
+                
+                pf = ProgressFile(f, callback=file_cb) if file_cb else f
+                
+                resp = self._http.post_multipart(
+                    "/device/exec",
+                    data={"request": json.dumps(payload)},
+                    files={"file": (os.path.basename(local_upload_file), pf)},
+                )
+        else:
+            log.debug(f"Calling exec API for device: {device}")
+            resp = self._http.post("/device/exec", json=payload)
+            
+        # 0.4.0: resp is JobInResponse
+        return Job(client=self, job_data=resp, device_name=device, command=operation)
 
     def _call_bulk_api(
         self,
@@ -667,6 +1017,7 @@ class NetPulseClient:
         ttl: int,
         connection_args: dict,
         driver: str,
+        execution_timeout: Optional[int] = None,
         driver_args: Optional[dict] = None,
         credential: Optional[dict] = None,
         rendering: Optional[dict] = None,
@@ -674,7 +1025,14 @@ class NetPulseClient:
         queue_strategy: Optional[str] = None,
         result_ttl: Optional[int] = None,
         webhook: Optional[dict] = None,
-    ) -> Job:
+        file_transfer: Optional[dict] = None,
+        detach: Optional[bool] = None,
+        push_interval: Optional[int] = None,
+        staged_file_id: Optional[str] = None,
+        enable_mode: Optional[bool] = None,
+        save: Optional[bool] = None,
+        callback: Optional[Callable] = None,
+    ) -> JobGroup:
         """Call POST /device/bulk
 
         Returns JobGroup (manages multiple Jobs)
@@ -695,6 +1053,9 @@ class NetPulseClient:
             operation_type: operation,
             "ttl": ttl,
         }
+        if execution_timeout is not None:
+            payload["execution_timeout"] = execution_timeout
+
         self._add_optional_params(
             payload,
             driver_args=driver_args,
@@ -704,17 +1065,20 @@ class NetPulseClient:
             queue_strategy=queue_strategy,
             result_ttl=result_ttl,
             webhook=webhook,
+            file_transfer=file_transfer,
+            detach=detach,
+            push_interval=push_interval,
+            staged_file_id=staged_file_id,
+            enable_mode=enable_mode,
+            save=save,
         )
 
         log.debug(f"Calling bulk API for {len(normalized_devices)} devices")
         resp = self._http.post("/device/bulk", json=payload)
 
-        data = resp["data"]
-        if not data:
-            raise NetPulseError("Bulk API returned empty data")
-
-        succeeded = data.get("succeeded", [])
-        failed = data.get("failed", [])
+        # 0.4.0: resp is BatchSubmitJobResponse {succeeded, failed}
+        succeeded = resp.get("succeeded", [])
+        failed = resp.get("failed", [])
 
         # Retry failed devices once if some succeeded
         if failed and succeeded:
@@ -734,9 +1098,9 @@ class NetPulseClient:
             if retry_devices:
                 retry_payload = {**payload, "devices": retry_devices}
                 retry_resp = self._http.post("/device/bulk", json=retry_payload)
-                retry_data = retry_resp.get("data", {})
-                retry_succeeded = retry_data.get("succeeded", [])
-                retry_failed = retry_data.get("failed", [])
+                # 0.4.0+: retry_resp is BatchSubmitJobResponse
+                retry_succeeded = retry_resp.get("succeeded", [])
+                retry_failed = retry_resp.get("failed", [])
 
                 if retry_succeeded:
                     succeeded.extend(retry_succeeded)
@@ -747,7 +1111,7 @@ class NetPulseClient:
                     log.warning(f"Still failed after retry: {failed}")
 
         if failed:
-            log.debug(f"Bulk API response - succeeded: {len(succeeded)}, failed: {failed}")
+            log.debug(f"Bulk API response - succeeded: {len(succeeded)}, failed: {len(failed)}")
             if succeeded:
                 log.debug(
                     f"First succeeded job structure: {list(succeeded[0].keys()) if isinstance(succeeded[0], dict) else 'not a dict'}"
@@ -797,7 +1161,63 @@ class NetPulseClient:
                 device_name = "unknown"
 
             jobs.append(
-                Job(client=self, job_data=job_data, device_name=device_name, commands=operation)
+                Job(client=self, job_data=job_data, device_name=device_name, command=operation)
             )
 
         return JobGroup(jobs=jobs, failed_devices=failed)
+
+    def fetch_staged_file(self, file_id: str, dest_path: str, callback: Optional[Callable] = None) -> None:
+        """Fetch a staged file from Netpulse storage.
+
+        Args:
+            file_id: The ID of the staged file or a full download URL.
+            dest_path: Local path where the file should be saved
+            callback: Progress callback function(completed_bytes, total_bytes)
+        """
+        import os
+
+        # If file_id is already a full URL, use download_file
+        if file_id.startswith("http"):
+            return self.download_file(file_id, dest_path, callback)
+
+        # Use the internal session for consistent headers and base_url handling
+        url = f"{self._http.base_url}/storage/fetch/{file_id}"
+        with self._http.session.stream("GET", url) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            
+            os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+            with open(dest_path, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if callback:
+                        callback(downloaded, total_size)
+
+    def download_file(self, url: str, dest_path: str, callback: Optional[Callable] = None) -> None:
+        """Download file from a full URL (e.g. from Result.download_url)
+
+        Args:
+            url: Full download URL
+            dest_path: Local path to save
+            callback: Progress callback
+        """
+        import os
+        
+        full_url = url
+        if not url.startswith("http"):
+             full_url = f"{self._http.base_url}/{url.lstrip('/')}"
+
+        with self._http.session.stream("GET", full_url) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            
+            os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+            with open(dest_path, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if callback:
+                        callback(downloaded, total_size)

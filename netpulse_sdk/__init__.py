@@ -15,7 +15,7 @@ from .error import (
     RequestTimeoutError,
     TimeoutError,
 )
-from .job import Job
+from .job import Job, JobGroup
 from .result import ConnectionTestResult, JobProgress, Result
 from .types import (
     CommandSpec,
@@ -47,6 +47,7 @@ __all__ = [
     "QueueStrategy",
     # Job and Results
     "Job",
+    "JobGroup",
     "Result",
     "JobProgress",
     "ConnectionTestResult",

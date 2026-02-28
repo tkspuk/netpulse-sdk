@@ -1,12 +1,25 @@
-# NetPulse SDK
+## Version Compatibility
 
-Python SDK for NetPulse Network Automation Platform.
+| SDK Version | NetPulse API Version | Status |
+|-------------|----------------------|--------|
+| **0.3.x**   | **0.4.0+**           | Recommended |
+| 0.2.x       | 0.3.x                | Legacy |
+
+> **IMPORTANT**: This version of the SDK (0.3.x) is strictly aligned with NetPulse API 0.4.0. It uses `stdout`, `stderr`, and `ok` as standard fields.
 
 ## Installation
 
 ```bash
 pip install netpulse-sdk
 ```
+local-install
+```bash
+pip install -e .
+```
+
+# NetPulse SDK
+
+Python SDK for NetPulse Network Automation Platform.
 
 ## Quick Start
 
@@ -17,20 +30,23 @@ from netpulse_sdk import NetPulseClient
 client = NetPulseClient(
     base_url="http://localhost:9000",
     api_key="your-api-key",
-    default_connection_args={
-        "device_type": "cisco_ios",
-        "username": "admin",
-        "password": "admin",
-    },
 )
 
-# Query device
-result = client.collect("10.1.1.1", "show version").first()
-print(result.output)
+# Query device (Recommended pattern)
+job = client.collect(
+    devices="10.1.1.1", 
+    command="show version",
+    driver="netmiko",
+    connection_args={"device_type": "cisco_ios", "username": "admin", "password": "..."}
+)
+
+if job: # Uses new __bool__ feature to check all_ok
+    result = job[0] # Prefer index over .first()
+    print(f"Output: {result.stdout}")
 
 # Push configuration
-job = client.run(devices="10.1.1.1", config=["hostname ROUTER-01"])
-print(f"Success: {job.all_ok}")
+job = client.run(devices="10.1.1.1", config=["hostname ROUTER-01"]).raise_on_error()
+print("Configuration success")
 ```
 
 ## Features
