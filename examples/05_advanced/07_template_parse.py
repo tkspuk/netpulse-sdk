@@ -38,12 +38,12 @@ result = np.run(
         "name": "textfsm",
         "template": "file:///etc/netpulse/templates/show_ip_int_brief.textfsm",
     },
-).first()
+)[0]
 
 if result.ok:
-    # 解析后的输出是结构化数据（列表或字典）
+    # 解析后的输出存储在 .parsed 属性中
     print("接口状态:")
-    for intf in result.output:
+    for intf in result.parsed:
         print(f"  {intf['INTERFACE']}: {intf['IPADDR']} ({intf['STATUS']})")
 
 
@@ -57,13 +57,15 @@ result = np.run(
     devices="10.1.1.1",
     command="show version",
     parsing={
-        "name": "ntc-templates",  # 使用 ntc-templates 解析器
-        "template": "cisco_ios_show_version",  # 社区模板名
+        "name": "textfsm",  # 使用 textfsm 引擎
+        "use_ntc_template": True,  # 0.4.0+: 显式开启 NTC 模板库支持
+        "template": "cisco_ios_show_version",  # 模板名
     },
-).first()
+)[0]
 
 if result.ok:
-    version_info = result.output[0] if result.output else {}
+    # 也支持直接通过 job.parsed 获取 (单设备单任务直接返回列表/字典)
+    version_info = result.parsed[0] if result.parsed else {}
     print(f"设备型号: {version_info.get('hardware', 'N/A')}")
     print(f"软件版本: {version_info.get('version', 'N/A')}")
     print(f"运行时间: {version_info.get('uptime', 'N/A')}")
@@ -86,12 +88,12 @@ job_group = np.run(
 )
 
 print("\nBGP 邻居汇总:")
-for result in job_group.wait_all():
-    if result.ok and result.output:
-        print(f"\n{result.device}:")
-        for neighbor in result.output:
+for result in job_group:
+    if result.ok and result.parsed:
+        print(f"\n{result.device_name}:")
+        for neighbor in result.parsed:
             print(f"  邻居 {neighbor.get('neighbor_ip')}: "
                   f"AS {neighbor.get('remote_as')}, "
                   f"前缀数 {neighbor.get('prefixes_received')}")
     else:
-        print(f"\n{result.device}: 采集失败")
+        print(f"\n{result.device_name}: 采集失败或无解析数据")

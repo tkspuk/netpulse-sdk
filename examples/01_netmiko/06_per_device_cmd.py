@@ -1,6 +1,9 @@
 """
 每设备不同命令 - command 覆盖
 """
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connection import np
 
 # 设备可带 command 字段覆盖 base 命令

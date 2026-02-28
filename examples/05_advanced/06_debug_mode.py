@@ -14,5 +14,5 @@ np = NetPulseClient(
 )
 
 # 执行操作时会输出详细日志
-result = np.collect("10.1.1.1", "show version").first()
+result = np.collect("10.1.1.1", "show version")[0]
 print(result.stdout)

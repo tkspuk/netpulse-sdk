@@ -3,6 +3,9 @@
 
 新增功能 (P2)
 """
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connection import np
 
 # === 查询所有作业 ===
@@ -32,6 +35,9 @@ print(f"Netmiko 队列: {len(netmiko_jobs)}")
 # === 查看作业详情 ===
 if finished_jobs:
     job = finished_jobs[0]
-    print(f"\n作业详情:")
+    print("\n作业详情:")
     print(f"  ID: {job.id}")
     print(f"  状态: {job.status}")
+    # 0.4.0+: 支持直接获取执行的设备和命令
+    print(f"  设备: {job.device_name}")
+    print(f"  命令: {job.command}")

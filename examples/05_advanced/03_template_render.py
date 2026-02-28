@@ -31,7 +31,7 @@ result = np.run(
             "desc": "WAN-Link",
         },
     },
-).first()
+)[0]
 
 print(f"内联模板配置: {result.ok}")
 
@@ -62,7 +62,7 @@ result = np.run(
             "subnet_mask": "255.255.255.0",
         },
     },
-).first()
+)[0]
 
 print(f"外部模板配置: {result.ok}")
 
@@ -87,5 +87,19 @@ job_group = np.run(
 )
 
 # 等待所有设备完成
-for result in job_group.wait_all():
-    print(f"{result.device}: 配置{'成功' if result.ok else '失败'}")
+for result in job_group:
+    print(f"{result.device_name}: 配置{'成功' if result.ok else '失败'}")
+
+
+# ========================================
+# 场景 4: 仅进行模板渲染（不推送到设备）
+# ========================================
+# 适用于预览生成的配置内容
+
+tmpl = "hostname {{ hostname }}\ninterface {{ intf }}\n description {{ desc }}"
+context = {"hostname": "CORE-SW-01", "intf": "Gi1/0/1", "desc": "Connected to Distribution"}
+
+# 0.4.0+: 支持直接调用 render_template 获取渲染结果
+rendered_text = np.render_template(template=tmpl, context=context)
+print("\n预览渲染后的配置:")
+print(f"\"\"\"\n{rendered_text}\n\"\"\"")

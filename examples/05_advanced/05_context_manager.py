@@ -14,7 +14,7 @@ with NetPulseClient(
     client.ping()
     
     # 执行操作
-    result = client.collect("10.1.1.1", "show version").first()
+    result = client.collect("10.1.1.1", "show version")[0]
     print(result.stdout)
 
 # 退出 with 块后自动调用 client.close()

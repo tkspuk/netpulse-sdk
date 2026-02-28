@@ -36,7 +36,7 @@ np = NetPulseClient(
 
 # 查询
 for result in np.collect("10.1.1.1", "show version"):
-    print(result.output)  # 推荐：自动处理成功/失败
+    print(result.stdout)  # 直接获取标准输出
 
 # 配置
 job = np.run(devices="10.1.1.1", config="hostname ROUTER-01")
@@ -50,10 +50,10 @@ print(f"成功: {job.all_ok}")
 ### Result 对象
 
 ```python
-result = np.collect("10.1.1.1", "show version").first()
+result = np.collect("10.1.1.1", "show version")[0]
 
 # ✅ 推荐使用
-result.output       # 输出内容（成功返回stdout，失败返回[ERROR]+stderr）
+result.stdout       # 标准输出内容
 result.ok           # 是否成功
 result.device_name  # 设备名
 result.job_id       # 作业 ID（存数据库用）
@@ -70,10 +70,13 @@ job = np.collect(["10.1.1.1", "10.1.1.2"], "show version")
 
 # ✅ 推荐使用
 job.all_ok          # 所有设备都成功
-job.first()         # 第一个结果
-job.succeeded()     # 成功的结果
-job.failed()        # 失败的结果
-job.outputs         # {设备名: 输出} 字典
+job[0]              # 第一个结果 (Result 对象)
+job.succeeded()     # 任务执行成功的 Result 列表
+job.truly_succeeded() # 任务成功且回显无错误的 Result 列表
+job.device_errors() # 任务成功但回显包含错误的 Result 列表
+job.stdout          # {设备名: 输出} 字典 (如果是单条命令，Job.stdout 直接返回字符串)
+job.stderr          # 错误输出字典
+job.parsed          # 解析后的结构化数据字典
 ```
 
 ---
@@ -107,6 +110,8 @@ job.outputs         # {设备名: 输出} 字典
 | `04_slow_device.py` | 慢速设备优化（driver_args） |
 | `05_multi_vendor.py` | 混合厂商（device_type覆盖） |
 | `06_per_device_cmd.py` | 每设备不同命令 |
+| `07_batch_config.py` | 批量配置下发 (含本地覆盖) |
+| `10_template_config.py` | 模板生成配置 |
 
 ### 02_paramiko - Linux 服务器
 | 文件 | 说明 |
@@ -117,7 +122,16 @@ job.outputs         # {设备名: 输出} 字典
 | `04_batch_servers.py` | 批量服务器 |
 | `05_ssh_key_auth.py` | SSH 密钥认证 |
 | `06_per_device_cmd.py` | 每设备不同命令 |
-| `07_long_running_task.py` | 长时间任务（异步提交/状态轮询） |
+| `07_long_running_task.py` | 长耗时任务 (wait/callback) |
+| `08_detached_task.py` | 后台脱机任务 (Detached) |
+| `09_file_transfer.py` | 文件传输 (upload/download) |
+| `10_sudo_execution.py` | Sudo 执行 |
+| `11_interactive_expect.py` | 交互式应答 (expect_map) |
+| `12_environment_variables.py` | 环境变量注入 |
+| `13_working_directory.py` | 工作目录切换 |
+| `14_script_execution.py` | 脚本代码执行 (script_content) |
+| `15_output_parsing.py` | 输出自动解析 (TextFSM) |
+| `16_webhook_notify.py` | 任务完成后 Webhook 回调 |
 
 ### 03_pyeapi - Arista
 | 文件 | 说明 |
@@ -132,7 +146,7 @@ job.outputs         # {设备名: 输出} 字典
 |------|------|
 | `01_iterate_results.py` | 迭代结果（多种写法） |
 | `02_filter_results.py` | 过滤结果（succeeded/failed） |
-| `03_quick_access.py` | 快捷访问（first/all_ok/outputs） |
+| `03_quick_access.py` | 快捷访问（[0]/all_ok/outputs） |
 | `04_result_attributes.py` | Result 对象属性 |
 | `05_error_info.py` | 错误信息获取 |
 | `06_serialization.py` | 序列化（to_dict/to_json） |
@@ -151,6 +165,9 @@ job.outputs         # {设备名: 输出} 字典
 | `09_job_management.py` | 🆕 作业管理（查询/取消） |
 | `10_worker_management.py` | 🆕 Worker 管理 |
 | `11_config_file.py` | 🆕 配置文件使用 |
+| `12_jump_host.py` | 🆕 跳板机 (Jump Host) |
+| `13_custom_credentials.py` | 🆕 批量设备不同凭据 |
+| `14_retry_handling.py` | 🆕 错误处理与重试 |
 
 ---
 

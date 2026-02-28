@@ -10,7 +10,7 @@ np = NetPulseClient(
     default_connection_args={"device_type": "cisco_ios", "username": "admin", "password": "password"},
 )
 
-result = np.collect("10.1.1.1", "show version").first()
+result = np.collect("10.1.1.1", "show version")[0]
 
 # 转为字典
 data = result.to_dict()

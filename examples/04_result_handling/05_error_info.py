@@ -12,6 +12,13 @@ np = NetPulseClient(
 
 job = np.collect(["10.1.1.1", "10.1.1.2"], "show version")
 
+# 0.4.0+: 检查提交阶段就失败的设备 (如网络不可达、鉴权错误等)
+failures = job.submission_failures()
+if failures:
+    print(f"共有 {len(failures)} 个设备提交失败:")
+    for f in failures:
+        print(f"  设备: {f['host']}, 原因: {f['reason']}")
+
 # 遍历失败的结果
 for result in job.failed():
     print(f"=== {result.device_name} ===")

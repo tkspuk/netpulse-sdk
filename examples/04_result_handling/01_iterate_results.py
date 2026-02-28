@@ -17,13 +17,13 @@ job = np.collect(devices, "show version")
 for result in job:
     print(f"{result.device_name}: {result.ok}")
 
-# === 写法2: first() 单设备快捷 ===
-result = job.first()
+# === 写法2: [0] 索引访问（推荐） ===
+result = job[0]
 print(result.stdout)
 
-# === 写法3: outputs 获取字典 ===
-outputs = job.outputs  # {"10.1.1.1": "output1", "10.1.1.2": "output2"}
-print(outputs)
+# === 写法3: stdout 获取字典 ===
+stdout_dict = job.stdout  # {"10.1.1.1": "output1", "10.1.1.2": "output2"}
+print(stdout_dict)
 
 # === 写法4: to_dict() 按设备分组 ===
 data = job.to_dict()  # {"10.1.1.1": [Result, ...], "10.1.1.2": [Result, ...]}

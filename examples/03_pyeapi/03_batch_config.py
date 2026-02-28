@@ -1,7 +1,10 @@
 """
 批量配置 - Arista 批量操作
 """
-from connection import np
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from connection import pyeapi_client as np
 
 arista_switches = ["10.1.1.1", "10.1.1.2", "10.1.1.3"]
 

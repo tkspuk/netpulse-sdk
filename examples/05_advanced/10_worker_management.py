@@ -3,6 +3,9 @@ Worker 管理 - 查看和管理后台 Worker
 
 新增功能 (P3)
 """
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connection import np
 
 # === 查询所有 Worker ===
@@ -23,7 +26,7 @@ for w in workers:
     status = w['status']
     status_count[status] = status_count.get(status, 0) + 1
 
-print(f"\n=== Worker 状态统计 ===")
+print("\n=== Worker 状态统计 ===")
 for status, count in status_count.items():
     print(f"  {status}: {count}")
 

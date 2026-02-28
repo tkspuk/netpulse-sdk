@@ -30,6 +30,11 @@ client = NetPulseClient(
     pool_connections=10,                        # [可选] 连接池数量，默认 10
     pool_maxsize=200,                           # [可选] 最大连接数，默认 200
     max_retries=3,                              # [可选] 自动重试次数，默认 3
+    profile="default",                          # [可选] 配置配置文件名称，默认 "default"
+    config_path="~/.netpulse.yaml",             # [可选] 显式指定配置文件路径
+    enable_mode=False,                          # [可选] 默认 enable 模式 (Netmiko)
+    save=False,                                 # [可选] 默认保存配置模式 (Netmiko)
+    api_key_name="X-API-KEY",                   # [可选] API Key Header 名称
 )
 
 # 方式2: 环境变量（自动读取 NETPULSE_URL, NETPULSE_API_KEY）
@@ -53,6 +58,11 @@ with NetPulseClient() as client:
 | `pool_connections` | `int` | ❌ | `10` | HTTP 连接池数量 |
 | `pool_maxsize` | `int` | ❌ | `200` | 每池最大连接数（大批量可调至 500） |
 | `max_retries` | `int` | ❌ | `3` | HTTP 请求失败自动重试次数 |
+| `profile` | `str` | ❌ | `"default"` | 配置文件 Profile 名称 |
+| `config_path` | `str` | ❌ | `None` | 显式指定 `.netmiko.yaml` 或 `.netpulse.yaml` 路径 |
+| `enable_mode` | `bool` | ❌ | `False` | 默认是否进入全局特权模式 |
+| `save` | `bool` | ❌ | `False` | 默认是否在执行后保存配置 |
+| `api_key_name` | `str` | ❌ | `"X-API-KEY"` | API Key 的 Header 名称 |
 
 ### 客户端方法
 
@@ -85,6 +95,12 @@ job = client.run(
     queue_strategy="fifo",                      # [可选] 队列策略：fifo/pinned
     result_ttl=3600,                            # [可选] 结果保留时间（秒，60-604800）
     webhook={},                                 # [可选] Webhook 回调配置
+    execution_timeout=60,                       # [可选] 命令执行超时（秒），默认 None
+    detach=False,                               # [可选] 是否后台运行（返回含 task_id 的 Job）
+    enable_mode=None,                           # [可选] 是否进入特权模式（覆盖客户端默认）
+    save=None,                                  # [可选] 是否保存配置（覆盖客户端默认）
+    local_upload_file=None,                     # [可选] 本地上传文件路径
+    callback=None,                              # [可选] 进度回调函数 callback(JobProgress)
 )
 ```
 
@@ -103,6 +119,9 @@ job = client.collect(
     queue_strategy="fifo",                      # [可选] 队列策略
     result_ttl=3600,                            # [可选] 结果保留时间（秒，60-604800）
     webhook={},                                 # [可选] Webhook 回调配置
+    execution_timeout=60,                       # [可选] 命令执行超时（秒）
+    detach=False,                               # [可选] 是否后台运行
+    callback=None,                              # [可选] 进度回调函数
 )
 ```
 
@@ -124,6 +143,12 @@ job = client.collect(
 | `queue_strategy` | `str` | ❌ | `None` | 队列策略：`fifo`（先进先出）、`pinned`（固定 Worker） |
 | `result_ttl` | `int` | ❌ | `None` | 结果保留时间（秒），范围 60-604800（最长 7 天） |
 | `webhook` | `dict` | ❌ | `None` | Webhook 回调配置，详见第 9 节 |
+| `execution_timeout` | `int` | ❌ | `None` | 命令执行超时（秒），与 `ttl`（队列超时）独立 |
+| `detach` | `bool` | ❌ | `False` | 是否异步后台提交，返回对象包含 `task_id` |
+| `enable_mode` | `bool` | ❌ | `None` | 显式开启/关闭特权模式进入 |
+| `save` | `bool` | ❌ | `None` | 显式开启/关闭配置保存 |
+| `local_upload_file` | `str` | ❌ | `None` | 直接指定本地文件上传路径 |
+| `callback` | `Callable` | ❌ | `None` | 进度回调函数，接收 `JobProgress` 对象 |
 
 ---
 
@@ -509,6 +534,7 @@ parsing = {
     "template": "textfsm_template", # [可选] 内联模板
     "engine": "textfsm",            # [可选] 解析引擎：textfsm/ttp/genie
     "context": {},                  # [可选] 解析器上下文
+    "use_ntc_templates": True,      # [可选] 是否使用 ntc-templates
 }
 ```
 
@@ -698,10 +724,15 @@ job = client.collect(
 | `command` | `str` | 执行的命令 |
 | `stdout` | `str` | 标准输出 |
 | `stderr` | `str` | 标准错误输出 |
-| `ok` | `bool` | 任务是否成功 |
+| `ok` | `bool` | 任务是否提交/执行成功 |
 | `duration_ms` | `int` | 执行耗时（毫秒） |
-| `error` | `Error` | 错误信息（`type`, `message`） |
-| `is_success` | `bool` | 真正成功（`ok=True` 且无设备错误） |
+| `duration_s` | `float` | 执行耗时（秒，property） |
+| `exit_status` | `int` | 命令退出状态码 (0 为成功) |
+| `download_url` | `str` | 文件下载链接 (仅限文件操作) |
+| `error` | `Error` | 错误信息（`type`, `message`, `retryable`） |
+| `metadata` | `dict` | 驱动返回的原始元数据 |
+| `parsed` | `Any` | 结构化解析后的数据 |
+| `is_success` | `bool` | 逻辑成功（`ok=True` 且无设备错误，property） |
 
 ### 方法
 
@@ -722,8 +753,17 @@ job = client.collect(
 |------|------|------|
 | `id` | `str` | 任务 ID |
 | `status` | `str` | 状态：`queued`/`started`/`finished`/`failed`/`canceled` |
-| `all_ok` | `bool` | 是否全部成功 |
-| `outputs` | `dict` | 输出字典 `{device: stdout}` |
+| `task_id` | `str` | 异步任务 ID (当 `detach=True` 时有效) |
+| `all_ok` | `bool` | 是否所有结果均成功 (ok=True) |
+| `stdout` | `str` | 合并后的所有 stdout 输出 (property) |
+| `stderr` | `str` | 合并后的所有 stderr 输出 (property) |
+| `parsed` | `dict` | 所有解析后的数据 `{command: data}` (property) |
+| `text` | `str` | 带标题的格式化输出 (property) |
+| `failed_commands`| `list` | 失败的命令列表 (property) |
+| `created_at` | `datetime`| 创建时间 |
+| `started_at` | `datetime`| 开始执行时间 |
+| `ended_at` | `datetime`| 结束执行时间 |
+| `worker` | `str` | 执行该任务的 Worker 名称 |
 
 ### 方法
 
@@ -732,15 +772,17 @@ job = client.collect(
 | `wait(timeout)` | `Job` | 等待完成 |
 | `refresh()` | `Job` | 刷新状态 |
 | `cancel()` | `None` | 取消任务 |
-| `results()` | `List[Result]` | 所有结果 |
-| `first()` | `Result` | 第一个结果 |
-| `succeeded()` | `List[Result]` | 成功结果 |
-| `failed()` | `List[Result]` | 失败结果 |
-| `truly_succeeded()` | `List[Result]` | 真正成功 |
-| `device_errors()` | `List[Result]` | 设备错误 |
-| `progress()` | `JobProgress` | 执行进度 |
-| `stream(poll_interval)` | `Iterator` | 流式结果 |
+| `results()` | `List[Result]` | 所有结果列表 |
+| `succeeded()` | `List[Result]` | 成功的结果 |
+| `failed()` | `List[Result]` | 失败的结果 |
+| `truly_succeeded()` | `List[Result]` | 真正成功的结果 (无设备错误) |
+| `device_errors()` | `List[Result]` | 包含设备错误的结果 |
+| `progress()` | `JobProgress` | 获取详细进度对象 |
+| `stream(poll_interval)` | `Iterator` | 流式返回结果 |
+| `raise_on_error()` | `Job` | 如果有失败则抛出异常 (支持链式) |
+| `summary()` | `str` | 获取一句话执行摘要 |
 | `to_dict()` | `dict` | 转字典 |
+| `to_json()` | `str` | 转完整 JSON 字符串 |
 
 ### 迭代
 

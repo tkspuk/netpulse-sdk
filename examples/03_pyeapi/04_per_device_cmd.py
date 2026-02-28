@@ -1,7 +1,10 @@
 """
 每设备不同命令 - 批量执行时覆盖命令
 """
-from connection import np
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from connection import pyeapi_client as np
 
 # 设备可带 command 字段覆盖 base 命令
 switches = [

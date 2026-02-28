@@ -14,5 +14,5 @@ np = NetPulseClient(
     },
 )
 
-result = np.collect("10.1.1.1", "whoami").first()
+result = np.collect("10.1.1.1", "whoami")[0]
 print(result.stdout)

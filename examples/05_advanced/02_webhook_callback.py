@@ -24,6 +24,6 @@ job = np.collect(
         "auth": ("user", "pass"),        # 可选: Basic Auth
         "timeout": 10.0,                 # 请求超时（0.5-120秒）
     },
-).first()
+)
 
-print(result.stdout)
+

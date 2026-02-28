@@ -7,7 +7,6 @@
 1. 当前目录 netpulse.yaml
 2. ~/.netpulse/config.yaml
 """
-from netpulse_sdk import NetPulseClient
 
 # === 方式1: 自动加载配置文件 ===
 # 会自动查找 netpulse.yaml 并读取 default profile

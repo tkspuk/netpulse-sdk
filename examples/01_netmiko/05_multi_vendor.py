@@ -1,6 +1,9 @@
 """
 混合厂商 - 每设备指定不同 device_type
 """
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connection import np
 
 # 每设备可覆盖 device_type、username、password
