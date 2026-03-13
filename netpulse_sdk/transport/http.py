@@ -66,11 +66,20 @@ class HTTPClient:
             try:
                 error_data = response.json()
                 detail = error_data.get("detail")
+                errors = error_data.get("errors")
+
+                # case 1: FastAPI default validation (list of dicts)
                 if isinstance(detail, list) and detail:
-                    # FastAPI validation error
                     msg = "; ".join([f"{d.get('loc', [])}: {d.get('msg')}" for d in detail])
                     raise NetworkError(f"Validation error: {msg}") from e
-                elif isinstance(detail, str):
+
+                # case 2: NetPulse server custom validation (detail='Validation Error', errors=[...])
+                if detail == "Validation Error" and isinstance(errors, list):
+                    msg = "; ".join([f"{d.get('loc', [])}: {d.get('msg')}" for d in errors])
+                    raise NetworkError(f"Validation error: {msg}") from e
+
+                # case 3: Simple string detail
+                if isinstance(detail, str):
                     raise NetworkError(f"API error: {detail}") from e
             except (ValueError, TypeError, KeyError):
                 pass

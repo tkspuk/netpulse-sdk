@@ -58,3 +58,6 @@ netpulse_sdk.egg-info
 .ruff_cache/
 scripts/pypi
 .pypirc
+.gitnexus
+.claude/
+.claude/workflows/

@@ -5,7 +5,7 @@ NetPulse SDK - Python client for NetPulse Network Automation Platform
 from importlib.metadata import version, PackageNotFoundError
 
 from .client import NetPulseClient
-from .enums import DriverName, QueueStrategy
+from .enums import DriverName, JobStatus, QueueStrategy, TaskStatus
 from .error import (
     AuthError,
     Error,
@@ -16,7 +16,7 @@ from .error import (
     TimeoutError,
 )
 from .job import Job, JobGroup
-from .result import ConnectionTestResult, JobProgress, Result
+from .result import ConnectionTestResult, DetachedTaskInfo, JobProgress, Result, WorkerInfo
 from .types import (
     CommandSpec,
     ConnectionArgs,
@@ -24,6 +24,7 @@ from .types import (
     DeviceList,
     DeviceSpec,
     DriverArgs,
+    FileTransferConfig,
     ParsingConfig,
     RenderingConfig,
     WebhookConfig,
@@ -45,12 +46,16 @@ __all__ = [
     # Enums
     "DriverName",
     "QueueStrategy",
+    "JobStatus",
+    "TaskStatus",
     # Job and Results
     "Job",
     "JobGroup",
     "Result",
     "JobProgress",
     "ConnectionTestResult",
+    "WorkerInfo",
+    "DetachedTaskInfo",
     # Errors
     "NetPulseError",
     "AuthError",
@@ -65,6 +70,7 @@ __all__ = [
     "CommandSpec",
     "ConnectionArgs",
     "DriverArgs",
+    "FileTransferConfig",
     "WebhookConfig",
     "CredentialConfig",
     "RenderingConfig",

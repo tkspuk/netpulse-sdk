@@ -40,14 +40,14 @@ class TestAdvancedFeatures:
         assert parsed["d2"]["c1"]["v"] == 2
 
     def test_discover_jobs(self, mock_client):
-        # Mock list_detached_tasks
+        # Mock list_detached_tasks - data matches backend DetachedTaskInResponse
         mock_client._http.get.return_value = [
             {
                 "task_id": "task_abc",
                 "status": "running",
-                "command": "tail -f log",
+                "command": ["tail -f log"],
                 "driver": "paramiko",
-                "metadata": {"host": "10.0.0.5"},
+                "host": "10.0.0.5",
                 "created_at": "2024-02-24T12:00:00Z"
             }
         ]

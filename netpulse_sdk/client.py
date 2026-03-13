@@ -8,7 +8,7 @@ from typing import Callable, List, Literal, Optional, Union
 
 from .error import NetPulseError
 from .job import Job, JobGroup
-from .result import ConnectionTestResult, JobProgress
+from .result import ConnectionTestResult, DetachedTaskInfo, JobProgress, WorkerInfo
 from .transport import HTTPClient
 
 log = logging.getLogger(__name__)
@@ -27,26 +27,28 @@ class NetPulseClient:
         self,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: int = 30,
-        driver: str = "netmiko",
+        timeout: Optional[int] = None,
+        driver: Optional[str] = None,
         default_connection_args: Optional[dict] = None,
-        pool_connections: int = 10,
-        pool_maxsize: int = 200,
-        max_retries: int = 3,
+        pool_connections: Optional[int] = None,
+        pool_maxsize: Optional[int] = None,
+        max_retries: Optional[int] = None,
         profile: Optional[str] = None,
         config_path: Optional[str] = None,
         enable_mode: bool = False,
         save: bool = False,
         api_key_name: Optional[str] = None,
+        default_credential: Optional[dict] = None,
     ):
         """Initialize NetPulse client
 
         Args:
             base_url: NetPulse API URL. Falls back to config file, then NETPULSE_URL env var.
             api_key: API key. Falls back to config file, then NETPULSE_API_KEY env var.
-            timeout: HTTP request timeout in seconds
-            driver: Default driver (netmiko, napalm, pyeapi, paramiko)
+            timeout: HTTP request timeout in seconds (default 30)
+            driver: Default driver (netmiko, napalm, pyeapi, paramiko). Default "netmiko"
             default_connection_args: Default connection arguments (username, password, etc.)
+            default_credential: Default Vault credential reference (optional)
             pool_connections: HTTP connection pool count (default 10)
             pool_maxsize: Maximum connections per pool (default 200, increase to 500 for large batches)
             max_retries: HTTP request auto-retry count (default 3)
@@ -61,7 +63,7 @@ class NetPulseClient:
 
         config = load_config(config_path=config_path, profile=profile)
 
-        # Priority: explicit param > config file > environment variable
+        # Priority: explicit param > config file > environment variable > hardcoded default
         base_url = (
             base_url or get_config_value(config, "base_url") or os.environ.get("NETPULSE_URL")
         )
@@ -74,8 +76,8 @@ class NetPulseClient:
             or os.environ.get("NETPULSE_API_KEY_NAME")
             or "X-API-KEY"
         )
-        timeout = timeout if timeout != 30 else get_config_value(config, "timeout", 30)
-        driver = driver if driver != "netmiko" else get_config_value(config, "driver", "netmiko")
+        timeout = timeout if timeout is not None else get_config_value(config, "timeout", 30)
+        driver = driver if driver is not None else get_config_value(config, "driver", "netmiko")
 
         # Merge connection args: config file < explicit param
         config_conn_args = get_config_value(config, "connection_args", {})
@@ -83,17 +85,23 @@ class NetPulseClient:
             config_conn_args.update(default_connection_args)
         default_connection_args = config_conn_args
 
-        # Pool settings from config
+        # Merge credentials: config file < explicit param
+        config_credential = get_config_value(config, "credential", {})
+        if default_credential:
+            config_credential.update(default_credential)
+        default_credential = config_credential
+
+        # Pool settings from config (explicit param > config > default)
         pool_connections = (
             pool_connections
-            if pool_connections != 10
+            if pool_connections is not None
             else get_config_value(config, "pool_connections", 10)
         )
         pool_maxsize = (
-            pool_maxsize if pool_maxsize != 200 else get_config_value(config, "pool_maxsize", 200)
+            pool_maxsize if pool_maxsize is not None else get_config_value(config, "pool_maxsize", 200)
         )
         max_retries = (
-            max_retries if max_retries != 3 else get_config_value(config, "max_retries", 3)
+            max_retries if max_retries is not None else get_config_value(config, "max_retries", 3)
         )
 
         # Improved error messages
@@ -113,6 +121,7 @@ class NetPulseClient:
         )
         self.driver = driver
         self.default_connection_args = default_connection_args or {}
+        self.default_credential = default_credential or None
         self.enable_mode = enable_mode
         self.save = save
 
@@ -184,13 +193,15 @@ class NetPulseClient:
 
             # Flatten 0.4.0+ 'result' object for better SDK experience
             result_inner = resp.get("result") or {}
+            # Collect extra fields not already handled as explicit params
+            explicit_keys = {"success", "latency", "error", "timestamp", "result", "host", "driver"}
             extra_data = {
                 k: v
                 for k, v in resp.items()
-                if k not in ["success", "latency", "error", "timestamp", "result"]
+                if k not in explicit_keys
             }
             if isinstance(result_inner, dict):
-                extra_data.update(result_inner)
+                extra_data.update({k: v for k, v in result_inner.items() if k not in explicit_keys})
 
             return ConnectionTestResult(
                 ok=resp.get("success", False),
@@ -288,7 +299,7 @@ class NetPulseClient:
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
         callback: Optional[Callable] = None,
-    ) -> Job:
+    ) -> Union[Job, JobGroup]:
         """Execute operations on devices (API Mode: config or command)
 
         This is the primary method for executing tasks. It automatically detects
@@ -365,7 +376,7 @@ class NetPulseClient:
         enable_mode: bool = False,
         save: bool = False,
         callback: Optional[Callable] = None,
-    ) -> Job:
+    ) -> Union[Job, JobGroup]:
         """Information Gathering and Audit (API Mode: command)
 
         Strictly for READ-ONLY operations. It forces save=False and enable_mode=False
@@ -465,10 +476,32 @@ class NetPulseClient:
                 connection_args = connection_args or first_device.get("connection_args")
 
             # Fallback to defaults
-            connection_args = connection_args or self.default_connection_args
+            connection_args = (connection_args or self.default_connection_args).copy()
 
         if not driver:
             raise ValueError("Driver must be specified if no default driver is set")
+
+        # 2.1 Use default credential if not provided
+        if credential is None:
+            credential = self.default_credential
+
+        # [PRO PROFESSIONAL DESIGN] Smart Suppress: If credentials are provided,
+        # we should suppress legacy authentication fields in connection_args
+        # to avoid validation conflicts in backend.
+        if credential and isinstance(connection_args, dict):
+            auth_fields = {
+                "username",
+                "password",
+                "secret",
+                "key_file",
+                "key_filename",
+                "pkey",
+                "passphrase",
+                "token",
+            }
+            # Only remove if it's actually in auth_fields to keep the dictionary clean
+            for field in auth_fields:
+                connection_args.pop(field, None)
 
         # 3. Normalize operation
         if isinstance(operation, str):
@@ -569,7 +602,11 @@ class NetPulseClient:
             **kwargs,
         }
         resp = self._http.post("/template/render", json=payload)
-        return resp.get("rendered", "")
+        # Backend returns rendered string directly
+        if isinstance(resp, str):
+            return resp
+        # Fallback for dict response (future-proofing)
+        return resp.get("rendered", resp) if isinstance(resp, dict) else str(resp)
 
     def parse_template(
         self,
@@ -588,7 +625,7 @@ class NetPulseClient:
         """
         payload = {
             "name": name,
-            "output": output,
+            "context": output,
             **kwargs,
         }
         if template:
@@ -628,7 +665,6 @@ class NetPulseClient:
 
     def list_jobs(
         self,
-        limit: int = 100,
         status: Optional[str] = None,
         queue: Optional[str] = None,
         node: Optional[str] = None,
@@ -637,13 +673,12 @@ class NetPulseClient:
         """List jobs with optional filters (GET /jobs)
 
         Args:
-            limit: Maximum number of jobs to return
             queue: Filter by queue name
             status: Filter by job status
             node: Filter by node name
             host: Filter by pinned host name
         """
-        params = {"limit": limit}
+        params = {}
         if queue:
             params["queue"] = queue
         if status:
@@ -703,7 +738,7 @@ class NetPulseClient:
         queue: Optional[str] = None,
         node: Optional[str] = None,
         host: Optional[str] = None,
-    ) -> List[dict]:
+    ) -> List[WorkerInfo]:
         """List workers with optional filters
 
         Args:
@@ -712,16 +747,7 @@ class NetPulseClient:
             host: Filter by pinned host name
 
         Returns:
-            List of worker info dictionaries with keys:
-                - name: Worker name
-                - status: Worker status ('idle', 'busy', 'suspended')
-                - pid: Process ID
-                - hostname: Host name
-                - queues: List of queue names
-                - last_heartbeat: Last heartbeat time
-                - birth_at: Worker start time
-                - successful_job_count: Successful job count
-                - failed_job_count: Failed job count
+            List of WorkerInfo objects
         """
         params = {}
         if queue:
@@ -732,30 +758,36 @@ class NetPulseClient:
             params["host"] = host
 
         resp = self._http.get("/workers", params=params if params else None)
-        return resp
+        return [WorkerInfo.model_validate(w) for w in resp]
 
-    def delete_workers(
-        self,
-        name: Optional[str] = None,
-        queue: Optional[str] = None,
-        node: Optional[str] = None,
-        host: Optional[str] = None,
-    ) -> List[str]:
-        """Delete workers with optional filters
+    def delete_worker(self, name: str) -> bool:
+        """Delete a single worker by name (DELETE /workers/{name})
 
         Args:
             name: Worker name to delete
+
+        Returns:
+            True if deleted successfully
+        """
+        self._http.delete(f"/workers/{name}")
+        return True
+
+    def delete_workers(
+        self,
+        queue: Optional[str] = None,
+        node: Optional[str] = None,
+        host: Optional[str] = None,
+    ) -> list:
+        """Delete multiple workers with filters (DELETE /workers)
+
+        Args:
             queue: Filter by queue name
             node: Filter by node name
             host: Filter by pinned host name
 
         Returns:
-            List of deleted worker names
+            List of deleted worker info
         """
-        if name:
-            resp = self._http.delete(f"/workers/{name}")
-            return [name] if resp else []
-
         params = {}
         if queue:
             params["queue"] = queue
@@ -764,26 +796,26 @@ class NetPulseClient:
         if host:
             params["host"] = host
 
-        resp = self._http.delete("/workers", params=params if params else None)
-        return resp
+        return self._http.delete("/workers", params=params if params else None)
 
     # =========================================================================
     # Detached Tasks (Task Recovery)
     # =========================================================================
 
-    def list_detached_tasks(self, status: Optional[str] = None) -> List[dict]:
+    def list_detached_tasks(self, status: Optional[str] = None) -> List[DetachedTaskInfo]:
         """List all active detached tasks in the server registry
 
         Args:
             status: Optional status filter (running, completed, launching)
 
         Returns:
-            List of detached task metadata dictionaries
+            List of DetachedTaskInfo objects
         """
         params = {}
         if status:
             params["status"] = status
-        return self._http.get("/detached-tasks", params=params)
+        resp = self._http.get("/detached-tasks", params=params)
+        return [DetachedTaskInfo.model_validate(t) for t in resp]
 
     def get_detached_task(self, task_id: str, offset: Optional[int] = None) -> dict:
         """Query a detached task's status and logs
@@ -817,20 +849,18 @@ class NetPulseClient:
         device: str,
         driver: str = "paramiko",
         connection_args: Optional[dict] = None,
-        driver_args: Optional[dict] = None,
         credential: Optional[dict] = None,
-    ) -> List[dict]:
+    ) -> List[DetachedTaskInfo]:
         """Scan a device for background tasks and sync them into the server registry
 
         Args:
             device: Device IP/hostname
             driver: Driver name (default: paramiko)
             connection_args: Connection arguments
-            driver_args: Optional driver arguments
             credential: Optional credential configuration
 
         Returns:
-            List of newly discovered task metadata
+            List of newly discovered DetachedTaskInfo objects
         """
         payload = {
             "driver": driver,
@@ -839,33 +869,33 @@ class NetPulseClient:
                 "host": device,
             },
         }
-        if driver_args:
-            payload["driver_args"] = driver_args
         if credential:
             payload["credential"] = credential
 
-        return self._http.post("/detached-tasks/discover", json=payload)
+        resp = self._http.post("/detached-tasks/discover", json=payload)
+        if isinstance(resp, list):
+            return [DetachedTaskInfo.model_validate(t) for t in resp]
+        return resp
 
     def discover_jobs(self, status: str = "running") -> List[Job]:
         """Recover Job objects for existing detached tasks"""
         tasks = self.list_detached_tasks(status=status)
         jobs = []
         for task in tasks:
-            task_id = task.get("task_id")
-            if not task_id:
+            if not task.task_id:
                 continue
 
             job_data = {
-                "id": f"task_{task_id}",
-                "status": "started" if task.get("status") == "running" else "finished",
-                "task_id": task_id,
-                "created_at": task.get("created_at"),
-                "command": task.get("command"),
-                "driver": task.get("driver"),
+                "id": f"task_{task.task_id}",
+                "status": "started" if task.status == "running" else "finished",
+                "task_id": task.task_id,
+                "created_at": task.created_at,
+                "command": task.command,
+                "driver": task.driver,
             }
 
-            device_name = task.get("metadata", {}).get("host") or "recovered_host"
-            command = [task.get("command")] if task.get("command") else []
+            device_name = task.host or "recovered_host"
+            command = task.command or []
 
             jobs.append(Job(self, job_data, device_name, command))
         return jobs
@@ -1220,10 +1250,19 @@ class NetPulseClient:
             callback: Progress callback
         """
         import os
+        from urllib.parse import urlparse
 
         full_url = url
         if not url.startswith("http"):
             full_url = f"{self._http.base_url}/{url.lstrip('/')}"
+        else:
+            # Handle internal k8s URLs by routing through base_url if it looks like a storage fetch
+            parsed = urlparse(url)
+            if "/storage/fetch/" in parsed.path:
+                base_parsed = urlparse(self._http.base_url)
+                if parsed.netloc != base_parsed.netloc:
+                    # Keep the full path, just swap the host to our gateway
+                    full_url = f"{self._http.base_url}/{parsed.path.lstrip('/')}"
 
         with self._http.session.stream("GET", full_url) as response:
             response.raise_for_status()

@@ -27,11 +27,12 @@ client = NetPulseClient(
     timeout=30,                                 # [可选] HTTP 请求超时（秒），默认 30
     driver="netmiko",                           # [可选] 默认驱动，默认 "netmiko"
     default_connection_args={},                 # [可选] 默认连接参数
+    default_credential=None,                    # [可选] 默认 Vault 凭据引用
     pool_connections=10,                        # [可选] 连接池数量，默认 10
     pool_maxsize=200,                           # [可选] 最大连接数，默认 200
     max_retries=3,                              # [可选] 自动重试次数，默认 3
     profile="default",                          # [可选] 配置配置文件名称，默认 "default"
-    config_path="~/.netpulse.yaml",             # [可选] 显式指定配置文件路径
+    config_path=None,                           # [可选] 显式指定配置文件路径
     enable_mode=False,                          # [可选] 默认 enable 模式 (Netmiko)
     save=False,                                 # [可选] 默认保存配置模式 (Netmiko)
     api_key_name="X-API-KEY",                   # [可选] API Key Header 名称
@@ -55,6 +56,7 @@ with NetPulseClient() as client:
 | `timeout` | `int` | ❌ | `30` | HTTP 请求超时（秒） |
 | `driver` | `str` | ❌ | `"netmiko"` | 驱动：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
 | `default_connection_args` | `dict` | ❌ | `{}` | 默认连接参数，详见第 3 节 |
+| `default_credential` | `dict` | ❌ | `None` | 默认 Vault 凭据引用，详见第 6 节 |
 | `pool_connections` | `int` | ❌ | `10` | HTTP 连接池数量 |
 | `pool_maxsize` | `int` | ❌ | `200` | 每池最大连接数（大批量可调至 500） |
 | `max_retries` | `int` | ❌ | `3` | HTTP 请求失败自动重试次数 |
@@ -70,8 +72,18 @@ with NetPulseClient() as client:
 |------|------|
 | `ping()` | 健康检查，返回 `True` 或抛出异常 |
 | `close()` | 关闭 HTTP 连接池 |
+| `test_connection(...)` | 测试单个设备连接 |
+| `test_connections(...)` | 批量测试多设备连接 |
 | `run(...)` | 执行命令/配置，详见 2.1 |
-| `collect(...)` | 只读查询，详见 2.2 |
+| `collect(...)` | 通用查询（只读），详见 2.2 |
+| `get_job(id)` | 获取指定任务详情 |
+| `list_jobs(...)` | 列出历史任务 (`List[Job]`) |
+| `cancel_job(id)` | 取消或删除任务 |
+| `list_workers(...)` | 查看后端 Worker 状态 (`List[WorkerInfo]`) |
+| `delete_worker(name)`| 删除单个后台 Worker |
+| `delete_workers(...)`| 批量删除后端 Worker (按条件) |
+| `render_template(...)` | 独立调用模板渲染功能 |
+| `parse_template(...)` | 独立调用输出解析功能 |
 
 ---
 
@@ -81,9 +93,9 @@ with NetPulseClient() as client:
 
 ```python
 job = client.run(
-    devices=["10.1.1.1", "10.1.1.2"],           # [必需] 设备列表
+    devices=["10.1.1.1"],                       # [必需] 设备列表
     command=["show version"],                   # [可选] 查询命令（与 config 互斥）
-    config=["hostname ROUTER-01"],              # [可选] 配置命令（与 command 互斥）
+    config=["hostname R1"],                    # [可选] 配置命令（与 command 互斥）
     mode="auto",                                # [可选] 执行模式：auto/exec/bulk
     ttl=300,                                    # [可选] 任务超时时间（秒）
     connection_args={},                         # [可选] 连接参数（覆盖默认值）
@@ -93,12 +105,13 @@ job = client.run(
     rendering={},                               # [可选] 模板渲染配置
     parsing={},                                 # [可选] 输出解析配置
     queue_strategy="fifo",                      # [可选] 队列策略：fifo/pinned
-    result_ttl=3600,                            # [可选] 结果保留时间（秒，60-604800）
+    result_ttl=3600,                            # [可选] 结果保留时间（秒）
     webhook={},                                 # [可选] Webhook 回调配置
-    execution_timeout=60,                       # [可选] 命令执行超时（秒），默认 None
-    detach=False,                               # [可选] 是否后台运行（返回含 task_id 的 Job）
-    enable_mode=None,                           # [可选] 是否进入特权模式（覆盖客户端默认）
-    save=None,                                  # [可选] 是否保存配置（覆盖客户端默认）
+    execution_timeout=None,                     # [可选] 命令执行超时（秒）
+    detach=False,                               # [可选] 是否后台运行
+    file_transfer=None,                         # [可选] 文件传输任务配置 (upload/download)
+    push_interval=None,                         # [可选] Webhook 增量推送间隔 (秒)
+    staged_file_id=None,                        # [可选] 暂存文件 ID (用于文件传输)
     local_upload_file=None,                     # [可选] 本地上传文件路径
     callback=None,                              # [可选] 进度回调函数 callback(JobProgress)
 )
@@ -132,23 +145,20 @@ job = client.collect(
 | `devices` | `str` / `list` | ✅ | - | 设备列表，详见第 5 节 |
 | `command` | `str` / `list` | ✅* | - | 查询命令（与 config 互斥） |
 | `config` | `str` / `list` | ✅* | - | 配置命令（与 command 互斥） |
-| `mode` | `str` | ❌ | `"auto"` | 执行模式：`auto`（自动选择）、`exec`（单设备）、`bulk`（批量） |
-| `ttl` | `int` | ❌ | `300` | 任务超时时间（秒） |
-| `connection_args` | `dict` | ❌ | `{}` | 连接参数，会与客户端的 `default_connection_args` 合并（方法参数优先级更高）。如果使用 `credential`，建议不在此处提供 `username` 和 `password` |
-| `driver` | `str` | ❌ | 客户端默认 | 驱动名称，覆盖客户端默认驱动。支持：`netmiko`, `napalm`, `pyeapi`, `paramiko` |
-| `driver_args` | `dict` | ❌ | `None` | 驱动特定参数，详见第 4 节 |
-| `credential` | `dict` | ❌ | `None` | Vault 凭据引用（从外部凭据管理系统获取认证信息），详见第 6 节。**注意**：`name` 字段是必需的 |
+| `mode` | `str` | ❌ | `"auto"` | 执行模式：`auto`, `exec`, `bulk` |
+| `ttl` | `int` | ❌ | `300` | 任务在队列中的超时时间（秒） |
+| `execution_timeout` | `int` | ❌ | `None` | 单条命令实际执行的硬超时（秒） |
+| `connection_args` | `dict` | ❌ | `{}` | 连接参数，会与客户端默认参数合并 |
+| `driver` | `str` | ❌ | - | 驱动，覆盖客户端默认值 |
+| `driver_args` | `dict` | ❌ | `None` | 驱动参数，优化执行性能 |
+| `credential` | `dict` | ❌ | `None` | Vault 凭据配置，详见第 6 节 |
 | `rendering` | `dict` | ❌ | `None` | 模板渲染配置，详见第 7 节 |
 | `parsing` | `dict` | ❌ | `None` | 输出解析配置，详见第 8 节 |
-| `queue_strategy` | `str` | ❌ | `None` | 队列策略：`fifo`（先进先出）、`pinned`（固定 Worker） |
-| `result_ttl` | `int` | ❌ | `None` | 结果保留时间（秒），范围 60-604800（最长 7 天） |
-| `webhook` | `dict` | ❌ | `None` | Webhook 回调配置，详见第 9 节 |
-| `execution_timeout` | `int` | ❌ | `None` | 命令执行超时（秒），与 `ttl`（队列超时）独立 |
-| `detach` | `bool` | ❌ | `False` | 是否异步后台提交，返回对象包含 `task_id` |
-| `enable_mode` | `bool` | ❌ | `None` | 显式开启/关闭特权模式进入 |
-| `save` | `bool` | ❌ | `None` | 显式开启/关闭配置保存 |
-| `local_upload_file` | `str` | ❌ | `None` | 直接指定本地文件上传路径 |
-| `callback` | `Callable` | ❌ | `None` | 进度回调函数，接收 `JobProgress` 对象 |
+| `file_transfer` | `dict` | ❌ | `None` | 文件传输配置：`{"operation": "upload", "remote_path": "..."}` |
+| `staged_file_id` | `str` | ❌ | `None` | 已上传到服务器的暂存文件 ID |
+| `push_interval` | `int` | ❌ | `None` | Webhook 增量推送日志的间隔时间（秒） |
+| `detach` | `bool` | ❌ | `False` | 异步提交不等待结果，返回 `Job` 含 `task_id` |
+| `callback` | `Callable` | ❌ | `None` | 流程进度回调，接收 `JobProgress` 对象 |
 
 ---
 
@@ -238,9 +248,9 @@ connection_args = {
 ```python
 driver_args = {
     # === 性能优化 ===
-    "read_timeout": 60,             # [可选] 读取超时（秒），默认 10
-    "delay_factor": 2,              # [可选] 延迟因子（慢速设备增大），默认 1
-    "max_loops": 1000,              # [可选] 最大循环次数，默认 500
+    "read_timeout": 60,             # [可选] 读取超时（秒），默认 60 (SDK 0.4.0+)
+    "delay_factor": 3,              # [可选] 延迟因子，默认 3
+    "max_loops": 5000,              # [可选] 最大循环次数，默认 5000
     "global_delay_factor": 1,       # [可选] 全局延迟因子，默认 1
     
     # === 输出处理 ===
@@ -781,7 +791,6 @@ job = client.collect(
 | `stream(poll_interval)` | `Iterator` | 流式返回结果 |
 | `raise_on_error()` | `Job` | 如果有失败则抛出异常 (支持链式) |
 | `summary()` | `str` | 获取一句话执行摘要 |
-| `to_dict()` | `dict` | 转字典 |
 | `to_json()` | `str` | 转完整 JSON 字符串 |
 
 ### 迭代
@@ -793,6 +802,44 @@ for result in job:           # 直接迭代
 result = job[0]              # 索引访问
 results = job["10.1.1.1"]    # 按设备名
 ```
+
+---
+
+## 12. 后台管理对象
+
+管理 API (`list_workers`, `list_detached_tasks`) 不再返回裸字典，而是返回封装好的 Pydantic 模型，以支持更好的 IDE 自动补全。
+
+### 12.1 WorkerInfo 对象
+
+通过 `client.list_workers()` 返回。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | Worker 名称 (通常为 UUID 格式) |
+| `status` | `str` | Worker 状态 (`idle`, `busy`, `suspended`) |
+| `pid` | `int` | 进程 PID |
+| `hostname` | `str` | 运行该 Worker 的宿主机名 |
+| `queues` | `list` | 监听的队列列表 |
+| `last_heartbeat` | `str` | 最后心跳时间 |
+| `birth_at` | `str` | Worker 启动时间 |
+| `successful_job_count` | `int` | 处理成功的任务数 |
+| `failed_job_count` | `int` | 处理失败的任务数 |
+
+### 12.2 DetachedTaskInfo 对象
+
+通过 `client.list_detached_tasks()` 返回。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | `str` | 远端脱机任务 ID |
+| `command` | `list` | 启动的原始命令 |
+| `host` | `str` | 设备 IP/主机名 |
+| `driver` | `str` | 使用的驱动 |
+| `status` | `str` | 任务状态 (`launching`, `running`, `completed`) |
+| `push_interval` | `int` | 日志推送间隔设定 |
+| `created_at` | `str` | 任务创建时间 |
+
+> ℹ️ **注**：`get_detached_task("id")` 接口除了返回以上元数据外，还会额外包含任务的最近实时输出 `stdout`，因此该接口依旧返回 `dict`。
 
 ---
 

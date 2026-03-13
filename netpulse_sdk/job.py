@@ -95,6 +95,7 @@ class Job(JobInterface):
         self._data = job_data
         self._device_name = device_name
         self._command = command or []
+        self._results_cache = None
 
     @property
     def id(self) -> str:
@@ -177,6 +178,7 @@ class Job(JobInterface):
         resp = self._client._http.get(f"/jobs/{self.id}")
         # 0.4.0+: resp is JobInResponse
         self._data = resp
+        self._results_cache = None
         return self
 
     def wait(
@@ -244,7 +246,11 @@ class Job(JobInterface):
         if not self.is_done():
             return []
 
-        return self._parse_results()
+        if self._results_cache is not None:
+            return self._results_cache
+
+        self._results_cache = self._parse_results()
+        return self._results_cache
 
     def _parse_results(self) -> List[Result]:
         """Convert JobInResponse to list of Result objects"""

@@ -10,6 +10,45 @@ from pydantic import BaseModel, ConfigDict, Field
 from .error import Error
 
 
+class WorkerInfo(BaseModel):
+    """Worker status information (mirrors backend WorkerInResponse)"""
+
+    name: str = Field(..., description="Worker name")
+    status: str = Field(..., description="Worker status: idle, busy, suspended")
+    pid: Optional[int] = Field(default=None, description="Process ID")
+    hostname: Optional[str] = Field(default=None, description="Host name")
+    queues: Optional[List[str]] = Field(default=None, description="Queue names")
+    last_heartbeat: Optional[str] = Field(default=None, description="Last heartbeat time")
+    birth_at: Optional[str] = Field(default=None, description="Worker start time")
+    successful_job_count: Optional[int] = Field(default=None, description="Successful job count")
+    failed_job_count: Optional[int] = Field(default=None, description="Failed job count")
+
+    model_config = ConfigDict(extra="allow")
+
+    def __repr__(self):
+        return f"WorkerInfo({self.name} [{self.status}])"
+
+
+class DetachedTaskInfo(BaseModel):
+    """Detached task metadata (mirrors backend DetachedTaskInResponse)"""
+
+    task_id: str = Field(..., description="Detached task ID")
+    command: List[str] = Field(default_factory=list, description="Command list")
+    host: str = Field(..., description="Device IP/hostname")
+    driver: str = Field(..., description="Driver name")
+    status: str = Field(..., description="Task status: running, completed, launching")
+    last_sync: Optional[str] = Field(default=None, description="Last sync time")
+    created_at: Optional[str] = Field(default=None, description="Creation time")
+    push_interval: Optional[int] = Field(default=None, description="Webhook push interval")
+    last_offset: Optional[int] = Field(default=None, description="Last log byte offset")
+    connection_args: Optional[dict] = Field(default=None, description="Connection args (masked)")
+
+    model_config = ConfigDict(extra="allow")
+
+    def __repr__(self):
+        return f"DetachedTaskInfo({self.task_id} @ {self.host} [{self.status}])"
+
+
 class ConnectionTestResult(BaseModel):
     """Device connection test result"""
 
