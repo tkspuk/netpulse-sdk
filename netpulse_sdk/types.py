@@ -4,7 +4,7 @@ Type aliases for NetPulse SDK
 This module provides type aliases for commonly used types across the SDK.
 """
 
-from typing import Dict, List, Union, TypedDict
+from typing import Any, Dict, List, Union, TypedDict
 from typing_extensions import NotRequired
 
 # Device specification types
@@ -30,6 +30,25 @@ class ConnectionArgs(TypedDict, total=False):
     port: int
     secret: str
     key_file: str
+    # Paramiko-specific
+    pkey: str
+    """Raw SSH private key content (PEM string). Alternative to key_file."""
+    passphrase: str
+    """Passphrase for the private key."""
+    keepalive: int
+    """Seconds between SSH keepalive packets. Enables persistent connection pooling."""
+    host_key_policy: str
+    """SSH host key policy: 'auto_add' (default), 'reject', or 'warning'."""
+    proxy_host: str
+    """Jump host address for tunnelled connections."""
+    proxy_port: int
+    """Jump host SSH port (default 22)."""
+    proxy_username: str
+    """Jump host username."""
+    proxy_password: str
+    """Jump host password."""
+    proxy_pkey: str
+    """Raw private key content for the jump host."""
 
 
 class DriverArgs(TypedDict, total=False):
@@ -44,6 +63,66 @@ class DriverArgs(TypedDict, total=False):
     global_delay_factor: float
     session_log: str
     custom_enter: str
+
+
+class NetmikoDriverArgs(DriverArgs, total=False):
+    """Netmiko-specific driver arguments (SSH to network devices).
+
+    Extends DriverArgs with Netmiko-only options for fine-tuning CLI interaction.
+    """
+
+    strip_prompt: bool
+    """Remove device prompt from output (default True in Netmiko)."""
+    strip_command: bool
+    """Remove the command echo from output (default True in Netmiko)."""
+    normalize: bool
+    """Normalize line endings in output."""
+    use_textfsm: bool
+    """Parse output with TextFSM (requires NTC templates installed on server)."""
+    expect_string: str
+    """Custom expect string to wait for instead of the prompt."""
+    auto_find_prompt: bool
+    """Automatically discover the device prompt."""
+    banner_timeout: float
+    """Timeout waiting for the SSH banner."""
+    conn_timeout: float
+    """TCP connection timeout in seconds."""
+    auth_timeout: float
+    """SSH authentication timeout in seconds."""
+
+
+class ParamikoDriverArgs(DriverArgs, total=False):
+    """Paramiko-specific driver arguments (SSH to Linux/Unix servers).
+
+    Extends DriverArgs with Paramiko-only options for shell interaction.
+    """
+
+    sudo: bool
+    """Run command with sudo."""
+    sudo_password: str
+    """Password for sudo (if required and different from login password)."""
+    expect_map: Dict[str, str]
+    """Interactive prompt → response mapping.
+    Example: {"Are you sure?": "yes", "Password:": "secret"}
+    """
+    working_directory: str
+    """Change to this directory before executing the command."""
+    environment: Dict[str, str]
+    """Environment variables to set for the command.
+    Example: {"PATH": "/usr/local/bin:/usr/bin", "DEBUG": "1"}
+    """
+    get_pty: bool
+    """Request a pseudo-TTY. Required for interactive programs (top, passwd, etc.)."""
+    invoke_shell: bool
+    """Use an interactive shell channel instead of exec_command."""
+    banner_timeout: float
+    """Timeout waiting for the SSH banner."""
+    auth_timeout: float
+    """SSH authentication timeout in seconds."""
+    look_for_keys: bool
+    """Search for private key files in ~/.ssh/ (default True)."""
+    allow_agent: bool
+    """Allow SSH agent forwarding (default True)."""
 
 
 class FileTransferConfig(TypedDict, total=False):

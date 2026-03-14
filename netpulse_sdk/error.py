@@ -50,9 +50,6 @@ class RequestTimeoutError(NetPulseError):
         super().__init__(message, detail)
 
 
-# Backward compatibility alias
-TimeoutError = RequestTimeoutError
-
 
 class JobFailedError(NetPulseError):
     """Job execution failed"""

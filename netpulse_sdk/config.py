@@ -107,7 +107,8 @@ def load_config(
     # Then overlay specific profile if different from default
     if profile_name != "default" and "profiles" in raw_config:
         if profile_name in raw_config["profiles"]:
-            profile_config = raw_config["profiles"][profile_name]
+            # Use a shallow copy to avoid mutating the parsed YAML data
+            profile_config = dict(raw_config["profiles"][profile_name])
             # Deep merge connection_args
             if "connection_args" in profile_config and "connection_args" in config:
                 config["connection_args"].update(profile_config.pop("connection_args", {}))

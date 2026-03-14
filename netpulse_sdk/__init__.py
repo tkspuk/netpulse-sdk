@@ -13,7 +13,6 @@ from .error import (
     NetPulseError,
     NetworkError,
     RequestTimeoutError,
-    TimeoutError,
 )
 from .job import Job, JobGroup
 from .result import ConnectionTestResult, DetachedTaskInfo, JobProgress, Result, WorkerInfo
@@ -24,6 +23,8 @@ from .types import (
     DeviceList,
     DeviceSpec,
     DriverArgs,
+    NetmikoDriverArgs,
+    ParamikoDriverArgs,
     FileTransferConfig,
     ParsingConfig,
     RenderingConfig,
@@ -61,7 +62,6 @@ __all__ = [
     "AuthError",
     "NetworkError",
     "RequestTimeoutError",
-    "TimeoutError",
     "JobFailedError",
     "Error",
     # Type aliases
@@ -70,6 +70,8 @@ __all__ = [
     "CommandSpec",
     "ConnectionArgs",
     "DriverArgs",
+    "NetmikoDriverArgs",
+    "ParamikoDriverArgs",
     "FileTransferConfig",
     "WebhookConfig",
     "CredentialConfig",

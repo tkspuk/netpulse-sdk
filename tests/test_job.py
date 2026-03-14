@@ -76,12 +76,40 @@ class TestJob:
 
     def test_job_getitem_access(self, mock_client, sample_job_data):
         job = Job(client=mock_client, job_data=sample_job_data, device_name="d1", command=["show version"])
-        
+
         # Access by index (now returns single Result object)
         res = job[0]
         assert res.command == "show version"
-        
+
         # Access by command pattern
         res_list_pattern = job["version"]
         assert len(res_list_pattern) == 1
         assert "version" in res_list_pattern[0].command
+
+    def test_cancel_survives_404_on_refresh(self, mock_client, sample_job_data):
+        """cancel() should not raise if backend deletes the job (404 on refresh)"""
+        queued_data = sample_job_data.copy()
+        queued_data["status"] = "queued"
+        queued_data["result"] = None
+
+        mock_client._http.delete.return_value = None
+        mock_client._http.get.side_effect = Exception("404 Not Found")
+
+        job = Job(client=mock_client, job_data=queued_data, device_name="d1", command=["cmd"])
+        result = job.cancel()
+
+        assert result is True
+        assert job.status == "canceled"
+
+    def test_repr_with_zero_duration(self, mock_client, sample_job_data):
+        """__repr__ should display duration even when it is 0.0"""
+        data = sample_job_data.copy()
+        data["duration"] = 0.0
+        job = Job(client=mock_client, job_data=data, device_name="d1", command=["cmd"])
+        assert "duration=0.0s" in repr(job)
+
+    def test_cancel_returns_bool(self, mock_client, sample_job_data):
+        """JobInterface.cancel() must return bool; non-queued job returns False"""
+        data = sample_job_data.copy()  # status=finished
+        job = Job(client=mock_client, job_data=data, device_name="d1", command=["cmd"])
+        assert job.cancel() is False

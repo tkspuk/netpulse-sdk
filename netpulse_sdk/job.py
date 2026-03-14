@@ -48,7 +48,7 @@ class JobInterface(ABC):
         pass
 
     @abstractmethod
-    def cancel(self) -> None:
+    def cancel(self) -> bool:
         """Cancel job"""
         pass
 
@@ -157,6 +157,18 @@ class Job(JobInterface):
         return self._data.get("queue")
 
     @property
+    def result_type(self) -> Optional[int]:
+        """Raw result type from the API: 1=Success, 2=Failed, 3=Stopped, 4=Retried.
+
+        None if the job has not finished yet.
+        Most users only need job.all_ok, but this helps diagnose retried or stopped jobs.
+        """
+        result_data = self._data.get("result")
+        if result_data is None:
+            return None
+        return result_data.get("type")
+
+    @property
     def worker(self) -> Optional[str]:
         """Worker name that executed the job"""
         return self._data.get("worker")
@@ -216,14 +228,24 @@ class Job(JobInterface):
 
         return self
 
-    def cancel(self) -> None:
-        """Cancel job (only queued status can be canceled)"""
+    def cancel(self) -> bool:
+        """Cancel job (only queued status can be canceled)
+
+        Returns:
+            True if job was successfully canceled, False if job is not in a cancelable state.
+        """
         if self.status != "queued":
             log.warning(f"Job {self.id} status is {self.status}, cannot cancel")
-            return
+            return False
 
         self._client._http.delete(f"/jobs/{self.id}")
-        self.refresh()
+        try:
+            self.refresh()
+        except Exception:
+            # Backend may delete the job on cancel; update status locally
+            self._data["status"] = "canceled"
+            self._results_cache = None
+        return True
 
     def progress(self) -> JobProgress:
         """Get progress
@@ -262,25 +284,15 @@ class Job(JobInterface):
 
         retval = result_data.get("retval")
         error_data = result_data.get("error")
-        duration_ms = int((self._data.get("duration") or 0) * 1000)
+        job_duration_ms = int((self._data.get("duration") or 0) * 1000)
 
         ok = self.status == "finished" and result_data.get("type") == 1
 
         error = None
         if error_data:
-            message = error_data.get("message", "Unknown error")
-
-            if "Pattern not detected" in message or "pattern" in message.lower():
-                message = (
-                    f"Device prompt detection failed. "
-                    f"This usually happens when device response is slow or hostname changed. "
-                    f"Try increasing read_timeout and delay_factor in driver_args. "
-                    f"Original error: {message}"
-                )
-
             error = Error(
                 type=error_data.get("type", "unknown"),
-                message=message,
+                message=error_data.get("message", "Unknown error"),
                 retryable=self._is_retryable_error(error_data.get("type")),
             )
 
@@ -298,13 +310,21 @@ class Job(JobInterface):
                     metadata = item.get("metadata", {})
                     parsed = item.get("parsed")
 
-                    # Set command-specific success
+                    # Set command-specific success based on exit status only.
+                    # stderr output alone does not indicate failure — many tools
+                    # (curl, git, etc.) write normal output to stderr.
                     cmd_ok = ok
-                    if exit_status != 0 or stderr:
+                    if exit_status != 0:
                         cmd_ok = False
 
                     # Effective device name
                     eff_device_name = metadata.get("host") or self._device_name
+
+                    # Prefer per-command duration from metadata over the job-level aggregate
+                    cmd_duration_s = metadata.get("duration_seconds")
+                    cmd_duration_ms = (
+                        int(cmd_duration_s * 1000) if cmd_duration_s is not None else job_duration_ms
+                    )
 
                     results.append(
                         Result(
@@ -315,7 +335,7 @@ class Job(JobInterface):
                             stdout=stdout,
                             stderr=stderr,
                             ok=cmd_ok,
-                            duration_ms=duration_ms,
+                            duration_ms=cmd_duration_ms,
                             exit_status=exit_status,
                             download_url=download_url,
                             metadata=metadata,
@@ -343,7 +363,7 @@ class Job(JobInterface):
                         stdout="",
                         stderr=error_msg,
                         ok=ok,
-                        duration_ms=duration_ms,
+                        duration_ms=job_duration_ms,
                         error=error,
                     )
                 )
@@ -354,6 +374,43 @@ class Job(JobInterface):
         """Check if error is retryable"""
         retryable_types = {"timeout", "network", "connection"}
         return error_type.lower() in retryable_types
+
+    def first(self) -> Result:
+        """Return the first result, waiting for completion if needed.
+
+        The most common pattern for single-device calls::
+
+            result = job.first()
+            print(result.stdout)
+
+        Equivalent to job.wait()[0].
+        """
+        self.wait()
+        results = self.results()
+        if not results:
+            raise IndexError("Job has no results")
+        return results[0]
+
+    def one(self) -> Result:
+        """Return the single result, raising if there is not exactly one.
+
+        Useful as a guard when you expect exactly one command on one device::
+
+            result = job.one()  # raises if 0 or 2+ results
+
+        Raises:
+            IndexError: If there are no results.
+            ValueError: If there are more than one result.
+        """
+        self.wait()
+        results = self.results()
+        if not results:
+            raise IndexError("Job has no results")
+        if len(results) > 1:
+            raise ValueError(
+                f"Expected exactly 1 result, got {len(results)}. Use first() or iterate instead."
+            )
+        return results[0]
 
     def stream(self, poll_interval: float = 0.5) -> Iterator[Result]:
         """Stream results (blocks until completion)"""
@@ -372,8 +429,11 @@ class Job(JobInterface):
         return iter(self.results())
 
     def __len__(self) -> int:
-        """Return number of results"""
-        self.wait()
+        """Return number of results.
+
+        Non-blocking: returns 0 if job is not yet done.
+        Call wait() first if you need the final count.
+        """
         return len(self.results())
 
     def __getitem__(self, key: Union[int, str]) -> Union[Result, List[Result]]:
@@ -509,35 +569,50 @@ class Job(JobInterface):
         results = self.results()
         ok_count = sum(1 for r in results if r.ok)
         total = len(results)
-        dur = f" in {self.duration:.1f}s" if self.duration else ""
+        dur = f" in {self.duration:.1f}s" if self.duration is not None else ""
         status = "✓ ALL OK" if self.all_ok else f"✗ {total - ok_count}/{total} FAILED"
         return f"Job({self.id[:8]}...) {self.device_name} [{status}] {total} cmd(s){dur}"
 
     def __bool__(self) -> bool:
-        """Allow natural truthiness: `if job:` returns True when all_ok"""
-        self.wait()
-        return self.all_ok
+        """Return True if job is done and all results succeeded.
+
+        Non-blocking: returns False if job is not yet done.
+        Call wait() first if you need the final verdict:
+            if job.wait():
+                ...
+        """
+        if not self.is_done():
+            return False
+        results = self.results()
+        return len(results) > 0 and all(r.ok for r in results)
 
     def __repr__(self):
         cmd_count = len(self._command) if self._command else "?"
-        dur = f", duration={self.duration:.1f}s" if self.duration else ""
+        dur = f", duration={self.duration:.1f}s" if self.duration is not None else ""
         return f"Job(id={self.id[:8]}..., device={self._device_name}, cmds={cmd_count}, status={self.status}{dur})"
 
 
 class JobGroup(JobInterface):
     """Multiple job aggregation manager"""
 
-    def __init__(self, jobs: List[Job], failed_devices: Optional[List] = None):
+    def __init__(
+        self,
+        jobs: List[Job],
+        failed_devices: Optional[List] = None,
+        retried_devices: Optional[List[str]] = None,
+    ):
         """Initialize JobGroup
 
         Args:
             jobs: Job list
             failed_devices: List of devices that failed to submit (may contain error info)
+            retried_devices: List of device hosts that were automatically retried on submission
         """
         if not jobs:
             raise ValueError("JobGroup requires at least one Job")
         self.jobs = jobs
         self.failed_devices = failed_devices or []
+        self.retried_devices: List[str] = retried_devices or []
         self._results_cache = None
 
     @property
@@ -690,6 +765,35 @@ class JobGroup(JobInterface):
                 seen.add(key)
                 yield result
 
+    def first(self) -> Result:
+        """Return the first result across all jobs, waiting for completion if needed.
+
+        Raises:
+            IndexError: If there are no results.
+        """
+        self.wait()
+        results = self.results()
+        if not results:
+            raise IndexError("JobGroup has no results")
+        return results[0]
+
+    def one(self) -> Result:
+        """Return the single result, raising if there is not exactly one.
+
+        Raises:
+            IndexError: If there are no results.
+            ValueError: If there are more than one result.
+        """
+        self.wait()
+        results = self.results()
+        if not results:
+            raise IndexError("JobGroup has no results")
+        if len(results) > 1:
+            raise ValueError(
+                f"Expected exactly 1 result, got {len(results)}. Use first() or iterate instead."
+            )
+        return results[0]
+
     def is_done(self) -> bool:
         """Whether all jobs are done"""
         return all(job.is_done() for job in self.jobs)
@@ -699,7 +803,11 @@ class JobGroup(JobInterface):
         return self.stream()
 
     def __len__(self) -> int:
-        """Return number of jobs in the group"""
+        """Return number of jobs (devices) in the group.
+
+        Note: this is the device count, not the result count.
+        Use len(group.results()) for total result count across all commands.
+        """
         return len(self.jobs)
 
     def __getitem__(self, device_name: str) -> List[Result]:
@@ -885,9 +993,17 @@ class JobGroup(JobInterface):
         return "\n".join(lines)
 
     def __bool__(self) -> bool:
-        """Allow natural truthiness: `if group:` returns True when all_ok"""
-        self.wait()
-        return self.all_ok
+        """Return True if all jobs are done and all results succeeded.
+
+        Non-blocking: returns False if any job is not yet done.
+        Call wait() first if you need the final verdict:
+            if group.wait():
+                ...
+        """
+        if not self.is_done():
+            return False
+        results = self.results()
+        return len(results) > 0 and all(r.ok for r in results)
 
     def __repr__(self):
         devices = ", ".join(j.device_name for j in self.jobs[:3])

@@ -2,12 +2,30 @@
 Result and JobProgress data models
 """
 
+import re
 from datetime import datetime
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .error import Error
+
+# Shared error patterns for device output detection.
+# Each pattern is a regex matched per-line (case-insensitive).
+# Use line-start anchors where appropriate to reduce false positives.
+DEFAULT_DEVICE_ERROR_PATTERNS = [
+    r"^% ",                # Cisco/Arista CLI error prefix
+    r"^%\S",               # Cisco CLI error (no space after %)
+    r"Error:",             # Explicit error label
+    r"Invalid input",      # Command syntax error
+    r"Incomplete command",  # Missing required arguments
+    r"Unrecognized command",
+    r"Unknown command",
+    r"Syntax error",
+    r"Bad IP address",
+    r"Ambiguous command",
+    r"Too many parameters",
+]
 
 
 class WorkerInfo(BaseModel):
@@ -115,35 +133,28 @@ class Result(BaseModel):
     def has_device_error(self, patterns: Optional[List[str]] = None) -> bool:
         """Check if device output contains error indicators
 
+        Uses per-line regex matching to reduce false positives.
+
         Args:
-            patterns: List of error patterns to check. Defaults to common patterns.
+            patterns: List of regex patterns to check (case-insensitive, matched per line).
+                Defaults to DEFAULT_DEVICE_ERROR_PATTERNS.
 
         Returns:
             True if any error pattern is found in stdout, False otherwise.
         """
-        default_patterns = [
-            "Error:",
-            "% Error",
-            "Invalid",
-            "Failed",
-            "Incomplete",
-            "Unrecognized",
-            "not found",
-            "% ",
-            "^",
-            "Too many parameters",
-            "Unknown command",
-            "Syntax error",
-            "Bad IP address",
-            "Ambiguous command",
-        ]
-        patterns = patterns or default_patterns
-
         if not self.ok:
             return True
 
-        stdout_lower = self.stdout.lower()
-        return any(pattern.lower() in stdout_lower for pattern in patterns)
+        if not self.stdout:
+            return False
+
+        check_patterns = patterns or DEFAULT_DEVICE_ERROR_PATTERNS
+        compiled = [re.compile(p, re.IGNORECASE) for p in check_patterns]
+
+        for line in self.stdout.split("\n"):
+            if any(pat.search(line) for pat in compiled):
+                return True
+        return False
 
     @property
     def is_success(self) -> bool:
@@ -159,8 +170,14 @@ class Result(BaseModel):
         """Allow natural truthiness: `if result:` returns True when ok"""
         return self.ok
 
-    def get_error_lines(self) -> List[str]:
+    def get_error_lines(self, patterns: Optional[List[str]] = None) -> List[str]:
         """Extract error lines from output
+
+        Uses the same patterns as has_device_error() for consistency.
+
+        Args:
+            patterns: List of regex patterns (case-insensitive, matched per line).
+                Defaults to DEFAULT_DEVICE_ERROR_PATTERNS.
 
         Returns:
             List of lines containing error indicators
@@ -168,10 +185,12 @@ class Result(BaseModel):
         if not self.stdout:
             return []
 
+        check_patterns = patterns or DEFAULT_DEVICE_ERROR_PATTERNS
+        compiled = [re.compile(p, re.IGNORECASE) for p in check_patterns]
+
         error_lines = []
         for line in self.stdout.split("\n"):
-            line_lower = line.lower()
-            if any(pattern in line_lower for pattern in ["error", "invalid", "failed", "%", "^"]):
+            if any(pat.search(line) for pat in compiled):
                 error_lines.append(line.strip())
 
         return error_lines

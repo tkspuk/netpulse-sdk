@@ -141,14 +141,14 @@ class NetPulseClient:
         """Check if NetPulse API is reachable
 
         Returns:
-            True if API is reachable, raises exception otherwise
+            True if API is reachable, False otherwise.
+            Use get_health() if you need error details.
         """
         try:
-            # Use a lightweight endpoint to check connectivity
             self._http.get("/health")
             return True
-        except Exception as e:
-            raise NetPulseError(f"API health check failed: {e}") from e
+        except Exception:
+            return False
 
     def test_connection(
         self,
@@ -299,11 +299,17 @@ class NetPulseClient:
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
         callback: Optional[Callable] = None,
+        auto_retry: bool = True,
     ) -> Union[Job, JobGroup]:
         """Execute operations on devices (API Mode: config or command)
 
         This is the primary method for executing tasks. It automatically detects
         whether to use 'config' or 'command' mode based on the input.
+
+        Args:
+            auto_retry: Automatically retry devices that fail bulk submission once (default True).
+                Set to False to disable silent retries. Retried devices are recorded in
+                JobGroup.retried_devices.
 
         Returns:
             Job or JobGroup instance
@@ -346,6 +352,7 @@ class NetPulseClient:
             enable_mode=enable_mode if enable_mode is not None else self.enable_mode,
             save=save if save is not None else self.save,
             return_group=was_list or mode == "bulk",
+            auto_retry=auto_retry,
         )
 
         if callback and not detach:
@@ -404,6 +411,16 @@ class NetPulseClient:
             save: Default False. Save configuration after execution.
             callback: Progress callback function(progress_obj)
         """
+        # Enforce read-only constraints
+        if command is None and not file_transfer:
+            raise ValueError("collect() requires a command.")
+        if save:
+            raise ValueError("collect() is read-only: save=True is not allowed. Use run() instead.")
+        if file_transfer and file_transfer.get("operation") == "upload":
+            raise ValueError(
+                "collect() is read-only: file upload is not allowed. Use run() instead."
+            )
+
         was_list = isinstance(devices, list)
         job = self._execute(
             devices=devices,
@@ -461,6 +478,7 @@ class NetPulseClient:
         save: Optional[bool] = None,
         callback: Optional[Callable] = None,
         return_group: bool = False,
+        auto_retry: bool = True,
     ) -> Union[Job, JobGroup]:
         """Internal execute dispatcher"""
         # 1. Normalize devices
@@ -485,8 +503,7 @@ class NetPulseClient:
         if credential is None:
             credential = self.default_credential
 
-        # [PRO PROFESSIONAL DESIGN] Smart Suppress: If credentials are provided,
-        # we should suppress legacy authentication fields in connection_args
+        # If credentials are provided, remove auth fields from connection_args
         # to avoid validation conflicts in backend.
         if credential and isinstance(connection_args, dict):
             auth_fields = {
@@ -546,6 +563,7 @@ class NetPulseClient:
                 enable_mode=eff_enable_mode,
                 save=eff_save,
                 callback=callback,
+                auto_retry=auto_retry,
             )
         else:
             device = devices[0]
@@ -1076,6 +1094,7 @@ class NetPulseClient:
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
         callback: Optional[Callable] = None,
+        auto_retry: bool = True,
     ) -> JobGroup:
         """Call POST /device/bulk
 
@@ -1123,11 +1142,10 @@ class NetPulseClient:
         # 0.4.0: resp is BatchSubmitJobResponse {succeeded, failed}
         succeeded = resp.get("succeeded", [])
         failed = resp.get("failed", [])
+        retried_hosts: List[str] = []
 
-        # Retry failed devices once if some succeeded
-        if failed and succeeded:
-            log.info(f"Retrying {len(failed)} failed devices: {failed}")
-
+        # Retry failed devices once if auto_retry is enabled and some succeeded
+        if auto_retry and failed and succeeded:
             # Extract failed device hosts
             failed_hosts = set()
             for item in failed:
@@ -1136,13 +1154,14 @@ class NetPulseClient:
                 elif isinstance(item, dict):
                     failed_hosts.add(item.get("host") or item.get("device", ""))
 
-            # Find devices to retry
             retry_devices = [d for d in normalized_devices if d.get("host") in failed_hosts]
 
             if retry_devices:
+                retried_hosts = [d.get("host", "") for d in retry_devices]
+                log.info(f"Auto-retrying {len(retry_devices)} failed devices: {retried_hosts}")
+
                 retry_payload = {**payload, "devices": retry_devices}
                 retry_resp = self._http.post("/device/bulk", json=retry_payload)
-                # 0.4.0+: retry_resp is BatchSubmitJobResponse
                 retry_succeeded = retry_resp.get("succeeded", [])
                 retry_failed = retry_resp.get("failed", [])
 
@@ -1151,15 +1170,6 @@ class NetPulseClient:
                     log.info(f"Retry succeeded for {len(retry_succeeded)} devices")
 
                 failed = retry_failed
-                if failed:
-                    log.warning(f"Still failed after retry: {failed}")
-
-        if failed:
-            log.debug(f"Bulk API response - succeeded: {len(succeeded)}, failed: {len(failed)}")
-            if succeeded:
-                log.debug(
-                    f"First succeeded job structure: {list(succeeded[0].keys()) if isinstance(succeeded[0], dict) else 'not a dict'}"
-                )
 
         if failed:
             log.warning(f"Some devices failed to submit: {failed}")
@@ -1208,7 +1218,7 @@ class NetPulseClient:
                 Job(client=self, job_data=job_data, device_name=device_name, command=operation)
             )
 
-        return JobGroup(jobs=jobs, failed_devices=failed)
+        return JobGroup(jobs=jobs, failed_devices=failed, retried_devices=retried_hosts)
 
     def fetch_staged_file(
         self, file_id: str, dest_path: str, callback: Optional[Callable] = None
@@ -1276,3 +1286,102 @@ class NetPulseClient:
                     downloaded += len(chunk)
                     if callback:
                         callback(downloaded, total_size)
+
+    # =========================================================================
+    # File Transfer Shortcuts (Paramiko / Netmiko)
+    # =========================================================================
+
+    def upload(
+        self,
+        device: str,
+        local_path: str,
+        remote_path: str,
+        connection_args: Optional[dict] = None,
+        driver: Optional[str] = None,
+        ttl: int = 300,
+        callback: Optional[Callable] = None,
+    ) -> "Result":
+        """Upload a local file to a remote device.
+
+        Shortcut for run() with file_transfer operation='upload'.
+        Supported drivers: paramiko (SFTP), netmiko (SCP).
+
+        Args:
+            device: Device IP/hostname
+            local_path: Local file path to upload
+            remote_path: Remote destination path (directory ending with '/' is supported)
+            connection_args: Connection arguments (overrides defaults)
+            driver: Driver name (overrides default)
+            ttl: Job timeout in seconds
+            callback: Progress callback function(completed_bytes, total_bytes)
+
+        Returns:
+            Result of the upload operation
+
+        Example::
+
+            np.upload("10.1.1.30", "./script.py", "/tmp/script.py")
+        """
+        job = self.run(
+            devices=device,
+            local_upload_file=local_path,
+            file_transfer={"operation": "upload", "remote_path": remote_path},
+            connection_args=connection_args,
+            driver=driver or self.driver,
+            ttl=ttl,
+        )
+        job.wait(callback=callback)
+        return job.first()
+
+    def download(
+        self,
+        device: str,
+        remote_path: str,
+        local_path: str,
+        connection_args: Optional[dict] = None,
+        driver: Optional[str] = None,
+        ttl: int = 300,
+        callback: Optional[Callable] = None,
+    ) -> "Result":
+        """Download a file from a remote device to local.
+
+        Shortcut that handles the full download flow:
+        run() → wait() → fetch staged file.
+        Supported drivers: paramiko (SFTP), netmiko (SCP).
+
+        Args:
+            device: Device IP/hostname
+            remote_path: Remote file path to download
+            local_path: Local destination path
+            connection_args: Connection arguments (overrides defaults)
+            driver: Driver name (overrides default)
+            ttl: Job timeout in seconds
+            callback: Progress callback function(completed_bytes, total_bytes)
+
+        Returns:
+            Result of the download operation
+
+        Example::
+
+            np.download("10.1.1.30", "/etc/hostname", "./hostname.txt")
+        """
+        from .error import NetPulseError
+
+        job = self.run(
+            devices=device,
+            file_transfer={"operation": "download", "remote_path": remote_path},
+            connection_args=connection_args,
+            driver=driver or self.driver,
+            ttl=ttl,
+        )
+        job.wait()
+        result = job.first()
+
+        if result.ok and result.download_url:
+            self.fetch_staged_file(result.download_url, local_path, callback=callback)
+        elif not result.ok:
+            raise NetPulseError(
+                f"Download failed for {device}:{remote_path} — {result.error or result.stderr}"
+            )
+
+        return result
