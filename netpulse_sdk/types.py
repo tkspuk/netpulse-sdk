@@ -4,7 +4,7 @@ Type aliases for NetPulse SDK
 This module provides type aliases for commonly used types across the SDK.
 """
 
-from typing import Any, Dict, List, Union, TypedDict
+from typing import Dict, List, Union, TypedDict
 from typing_extensions import NotRequired
 
 # Device specification types
@@ -49,6 +49,16 @@ class ConnectionArgs(TypedDict, total=False):
     """Jump host password."""
     proxy_pkey: str
     """Raw private key content for the jump host."""
+    proxy_key_filename: str
+    """Path to the jump host's SSH private key file."""
+    timeout: float
+    """SSH connection timeout in seconds (default 30.0). Separate from per-command read_timeout."""
+    compress: bool
+    """Enable SSH compression."""
+    look_for_keys: bool
+    """Automatically search for private key files in ~/.ssh/ (default True)."""
+    allow_agent: bool
+    """Allow SSH agent for authentication (default False)."""
 
 
 class DriverArgs(TypedDict, total=False):
@@ -113,16 +123,18 @@ class ParamikoDriverArgs(DriverArgs, total=False):
     """
     get_pty: bool
     """Request a pseudo-TTY. Required for interactive programs (top, passwd, etc.)."""
+    script_content: str
+    """Inline script body to execute directly, without uploading a file first."""
+    script_interpreter: str
+    """Interpreter for script_content: 'bash' (default), 'sh', 'python3', etc."""
+    stop_on_error: bool
+    """Config mode: stop subsequent commands after the first failure (default True)."""
     invoke_shell: bool
     """Use an interactive shell channel instead of exec_command."""
     banner_timeout: float
     """Timeout waiting for the SSH banner."""
     auth_timeout: float
     """SSH authentication timeout in seconds."""
-    look_for_keys: bool
-    """Search for private key files in ~/.ssh/ (default True)."""
-    allow_agent: bool
-    """Allow SSH agent forwarding (default True)."""
 
 
 class FileTransferConfig(TypedDict, total=False):

@@ -1,5 +1,7 @@
+import pytest
 from unittest.mock import patch
 from netpulse_sdk import Job
+from netpulse_sdk.error import JobFailedError
 
 class TestJob:
     def test_job_refresh_and_done(self, mock_client, sample_job_data):
@@ -113,3 +115,101 @@ class TestJob:
         data = sample_job_data.copy()  # status=finished
         job = Job(client=mock_client, job_data=data, device_name="d1", command=["cmd"])
         assert job.cancel() is False
+
+    def test_result_type_property(self, mock_client, sample_job_data):
+        """result_type exposes API type field (1=Success, 2=Failed, ...)"""
+        job = Job(mock_client, sample_job_data, "d1", ["show version"])
+        assert job.result_type == 1
+
+    def test_result_type_none_when_no_result(self, mock_client, sample_job_data):
+        data = sample_job_data.copy()
+        data["result"] = None
+        job = Job(mock_client, data, "d1", ["cmd"])
+        assert job.result_type is None
+
+    def test_summary_with_duration(self, mock_client, sample_job_data):
+        """summary() includes duration when present"""
+        data = sample_job_data.copy()
+        data["duration"] = 1.5
+        job = Job(mock_client, data, "d1", ["show version"])
+        s = job.summary()
+        assert "1.5s" in s
+        assert "ALL OK" in s
+
+    def test_summary_without_duration(self, mock_client, sample_job_data):
+        """summary() omits duration when None"""
+        job = Job(mock_client, sample_job_data, "d1", ["show version"])
+        s = job.summary()
+        assert "1 cmd" in s
+        assert "in" not in s
+
+    def test_one_raises_on_multiple_results(self, mock_client):
+        data = {
+            "id": "j-multi", "status": "finished",
+            "result": {
+                "type": 1,
+                "retval": [
+                    {"command": "c1", "stdout": "o1", "metadata": {"host": "d1"}},
+                    {"command": "c2", "stdout": "o2", "metadata": {"host": "d1"}},
+                ],
+            },
+        }
+        job = Job(mock_client, data, "d1", ["c1", "c2"])
+        with pytest.raises(ValueError, match="Expected exactly 1"):
+            job.one()
+
+    def test_raise_on_error_passes_when_all_ok(self, mock_client, sample_job_data):
+        job = Job(mock_client, sample_job_data, "d1", ["show version"])
+        returned = job.raise_on_error()
+        assert returned is job  # chaining
+
+    def test_raise_on_error_raises_when_failed(self, mock_client):
+        data = {
+            "id": "j-fail", "status": "failed",
+            "result": {
+                "type": 2,
+                "retval": [],
+                "error": {"type": "connection", "message": "timeout"},
+            },
+        }
+        job = Job(mock_client, data, "d1", ["cmd"])
+        with pytest.raises(JobFailedError):
+            job.raise_on_error()
+
+    def test_text_property(self, mock_client, sample_job_data):
+        """text property formats output with command header"""
+        job = Job(mock_client, sample_job_data, "d1", ["show version"])
+        t = job.text
+        assert "--- show version ---" in t
+        assert "Cisco" in t
+
+    def test_failed_commands_property(self, mock_client):
+        data = {
+            "id": "j1", "status": "finished",
+            "result": {
+                "type": 1,
+                "retval": [
+                    {"command": "c1", "stdout": "ok", "exit_status": 0, "metadata": {"host": "d1"}},
+                    {"command": "c2", "stdout": "", "exit_status": 1, "metadata": {"host": "d1"}},
+                ],
+            },
+        }
+        job = Job(mock_client, data, "d1", ["c1", "c2"])
+        assert job.failed_commands == ["c2"]
+
+    def test_job_with_error_result_creates_fallback(self, mock_client):
+        """Job with empty retval and error creates a synthetic failed Result"""
+        data = {
+            "id": "j-err", "status": "failed",
+            "result": {
+                "type": 2,
+                "retval": [],
+                "error": {"type": "timeout", "message": "Device timed out"},
+            },
+        }
+        job = Job(mock_client, data, "d1", ["show ver"])
+        results = job.results()
+        assert len(results) == 1
+        assert results[0].ok is False
+        assert results[0].error.message == "Device timed out"
+        assert results[0].error.retryable is True  # timeout is retryable

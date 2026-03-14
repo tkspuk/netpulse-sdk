@@ -67,6 +67,23 @@ class DetachedTaskInfo(BaseModel):
         return f"DetachedTaskInfo({self.task_id} @ {self.host} [{self.status}])"
 
 
+class DetachedTaskLog(BaseModel):
+    """Response from GET /detached-tasks/{task_id} — log snapshot with metadata"""
+
+    task_id: str = Field(..., description="Detached task ID")
+    output: str = Field(default="", description="Log output since last offset")
+    is_running: bool = Field(default=False, description="Whether the process is still alive")
+    next_offset: int = Field(default=0, description="Pass as ?offset= in the next call for incremental reading")
+    completed: bool = Field(default=False, description="Whether the task has completed")
+    pid: Optional[int] = Field(default=None, description="Remote process PID")
+
+    model_config = ConfigDict(extra="allow")
+
+    def __repr__(self):
+        state = "running" if self.is_running else "done"
+        return f"DetachedTaskLog({self.task_id} [{state}], offset={self.next_offset})"
+
+
 class ConnectionTestResult(BaseModel):
     """Device connection test result"""
 

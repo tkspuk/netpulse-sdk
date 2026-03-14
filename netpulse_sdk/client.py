@@ -8,7 +8,7 @@ from typing import Callable, List, Literal, Optional, Union
 
 from .error import NetPulseError
 from .job import Job, JobGroup
-from .result import ConnectionTestResult, DetachedTaskInfo, JobProgress, WorkerInfo
+from .result import ConnectionTestResult, DetachedTaskInfo, DetachedTaskLog, JobProgress, Result, WorkerInfo
 from .transport import HTTPClient
 
 log = logging.getLogger(__name__)
@@ -835,20 +835,69 @@ class NetPulseClient:
         resp = self._http.get("/detached-tasks", params=params)
         return [DetachedTaskInfo.model_validate(t) for t in resp]
 
-    def get_detached_task(self, task_id: str, offset: Optional[int] = None) -> dict:
-        """Query a detached task's status and logs
+    def get_detached_task(self, task_id: str, offset: Optional[int] = None) -> "DetachedTaskLog":
+        """Query a detached task's logs and status (GET /detached-tasks/{task_id})
 
         Args:
             task_id: Detached task ID
-            offset: Byte offset to read logs from
+            offset: Byte offset for incremental reading. Pass DetachedTaskLog.next_offset
+                    from the previous call to avoid duplicate log lines.
 
         Returns:
-            Dictionary containing the latest output and task metadata
+            DetachedTaskLog with output, is_running, next_offset, and pid.
         """
         params = {}
         if offset is not None:
             params["offset"] = offset
-        return self._http.get(f"/detached-tasks/{task_id}", params=params)
+        resp = self._http.get(f"/detached-tasks/{task_id}", params=params)
+        return DetachedTaskLog.model_validate(resp)
+
+    def tail_detached_task(
+        self,
+        task_id: str,
+        poll_interval: float = 3.0,
+        callback: Optional[Callable] = None,
+    ) -> str:
+        """Stream incremental logs from a running detached task until it finishes.
+
+        Handles the next_offset loop automatically so callers don't have to.
+
+        Args:
+            task_id: Detached task ID (from job.task_id after run(..., detach=True))
+            poll_interval: Seconds between polls (default 3.0)
+            callback: Optional function(log_chunk: str) called with each new log chunk.
+                      If not provided, chunks are silently collected.
+
+        Returns:
+            Full accumulated log output.
+
+        Example::
+
+            job = np.run("10.1.1.1", "apt-get upgrade -y", detach=True)
+            full_log = np.tail_detached_task(
+                job.task_id,
+                callback=lambda chunk: print(chunk, end="", flush=True),
+            )
+        """
+        import time
+
+        offset = 0
+        full_output = []
+
+        while True:
+            snap = self.get_detached_task(task_id, offset=offset)
+            if snap.output:
+                full_output.append(snap.output)
+                if callback:
+                    callback(snap.output)
+            offset = snap.next_offset
+
+            if not snap.is_running:
+                break
+
+            time.sleep(poll_interval)
+
+        return "".join(full_output)
 
     def cancel_detached_task(self, task_id: str) -> bool:
         """Terminate a detached task on the remote host
@@ -1300,7 +1349,7 @@ class NetPulseClient:
         driver: Optional[str] = None,
         ttl: int = 300,
         callback: Optional[Callable] = None,
-    ) -> "Result":
+    ) -> Result:
         """Upload a local file to a remote device.
 
         Shortcut for run() with file_transfer operation='upload'.
@@ -1342,7 +1391,7 @@ class NetPulseClient:
         driver: Optional[str] = None,
         ttl: int = 300,
         callback: Optional[Callable] = None,
-    ) -> "Result":
+    ) -> Result:
         """Download a file from a remote device to local.
 
         Shortcut that handles the full download flow:
@@ -1377,11 +1426,13 @@ class NetPulseClient:
         job.wait()
         result = job.first()
 
-        if result.ok and result.download_url:
-            self.fetch_staged_file(result.download_url, local_path, callback=callback)
-        elif not result.ok:
+        if not result.ok:
             raise NetPulseError(
                 f"Download failed for {device}:{remote_path} — {result.error or result.stderr}"
             )
-
+        if not result.download_url:
+            raise NetPulseError(
+                f"Download job succeeded but no download_url returned for {device}:{remote_path}"
+            )
+        self.fetch_staged_file(result.download_url, local_path, callback=callback)
         return result
