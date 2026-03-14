@@ -50,7 +50,6 @@ class RequestTimeoutError(NetPulseError):
         super().__init__(message, detail)
 
 
-
 class JobFailedError(NetPulseError):
     """Job execution failed"""
 

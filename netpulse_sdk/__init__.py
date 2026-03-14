@@ -15,7 +15,14 @@ from .error import (
     RequestTimeoutError,
 )
 from .job import Job, JobGroup
-from .result import ConnectionTestResult, DetachedTaskInfo, DetachedTaskLog, JobProgress, Result, WorkerInfo
+from .result import (
+    ConnectionTestResult,
+    DetachedTaskInfo,
+    DetachedTaskLog,
+    JobProgress,
+    Result,
+    WorkerInfo,
+)
 from .types import (
     CommandSpec,
     ConnectionArgs,

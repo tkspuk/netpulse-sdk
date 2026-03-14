@@ -14,10 +14,10 @@ from .error import Error
 # Each pattern is a regex matched per-line (case-insensitive).
 # Use line-start anchors where appropriate to reduce false positives.
 DEFAULT_DEVICE_ERROR_PATTERNS = [
-    r"^% ",                # Cisco/Arista CLI error prefix
-    r"^%\S",               # Cisco CLI error (no space after %)
-    r"Error:",             # Explicit error label
-    r"Invalid input",      # Command syntax error
+    r"^% ",  # Cisco/Arista CLI error prefix
+    r"^%\S",  # Cisco CLI error (no space after %)
+    r"Error:",  # Explicit error label
+    r"Invalid input",  # Command syntax error
     r"Incomplete command",  # Missing required arguments
     r"Unrecognized command",
     r"Unknown command",
@@ -73,7 +73,9 @@ class DetachedTaskLog(BaseModel):
     task_id: str = Field(..., description="Detached task ID")
     output: str = Field(default="", description="Log output since last offset")
     is_running: bool = Field(default=False, description="Whether the process is still alive")
-    next_offset: int = Field(default=0, description="Pass as ?offset= in the next call for incremental reading")
+    next_offset: int = Field(
+        default=0, description="Pass as ?offset= in the next call for incremental reading"
+    )
     completed: bool = Field(default=False, description="Whether the task has completed")
     pid: Optional[int] = Field(default=None, description="Remote process PID")
 

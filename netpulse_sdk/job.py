@@ -323,7 +323,9 @@ class Job(JobInterface):
                     # Prefer per-command duration from metadata over the job-level aggregate
                     cmd_duration_s = metadata.get("duration_seconds")
                     cmd_duration_ms = (
-                        int(cmd_duration_s * 1000) if cmd_duration_s is not None else job_duration_ms
+                        int(cmd_duration_s * 1000)
+                        if cmd_duration_s is not None
+                        else job_duration_ms
                     )
 
                     results.append(

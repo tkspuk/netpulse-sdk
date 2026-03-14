@@ -8,7 +8,14 @@ from typing import Callable, List, Literal, Optional, Union
 
 from .error import NetPulseError
 from .job import Job, JobGroup
-from .result import ConnectionTestResult, DetachedTaskInfo, DetachedTaskLog, JobProgress, Result, WorkerInfo
+from .result import (
+    ConnectionTestResult,
+    DetachedTaskInfo,
+    DetachedTaskLog,
+    JobProgress,
+    Result,
+    WorkerInfo,
+)
 from .transport import HTTPClient
 
 log = logging.getLogger(__name__)
@@ -98,7 +105,9 @@ class NetPulseClient:
             else get_config_value(config, "pool_connections", 10)
         )
         pool_maxsize = (
-            pool_maxsize if pool_maxsize is not None else get_config_value(config, "pool_maxsize", 200)
+            pool_maxsize
+            if pool_maxsize is not None
+            else get_config_value(config, "pool_maxsize", 200)
         )
         max_retries = (
             max_retries if max_retries is not None else get_config_value(config, "max_retries", 3)
@@ -195,11 +204,7 @@ class NetPulseClient:
             result_inner = resp.get("result") or {}
             # Collect extra fields not already handled as explicit params
             explicit_keys = {"success", "latency", "error", "timestamp", "result", "host", "driver"}
-            extra_data = {
-                k: v
-                for k, v in resp.items()
-                if k not in explicit_keys
-            }
+            extra_data = {k: v for k, v in resp.items() if k not in explicit_keys}
             if isinstance(result_inner, dict):
                 extra_data.update({k: v for k, v in result_inner.items() if k not in explicit_keys})
 
