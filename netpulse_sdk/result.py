@@ -4,7 +4,7 @@ Result and JobProgress data models
 
 import re
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -226,3 +226,69 @@ class Result(BaseModel):
         status = "OK" if self.ok else "FAILED"
         dur = f" {self.duration_ms}ms" if self.duration_ms else ""
         return f"Result({self.device_name}:{self.command} [{status}]{dur})"
+
+
+class WebhookEvent(BaseModel):
+    """Webhook event payload received from NetPulse server.
+
+    Use this model to parse incoming webhook HTTP request bodies::
+
+        event = WebhookEvent.model_validate(request.json())
+
+        if event.final:
+            # One-shot task or detached task completed
+            for item in (event.result or {}).get("retval") or []:
+                print(item["stdout"])
+        else:
+            # Incremental log push from detached task
+            buffer.append(event.result)
+
+    Attributes:
+        id: Job ID or Task ID (for detached tasks).
+        status: Job status aligned with API (``"finished"``, ``"failed"``).
+        event_type: Event classification — ``"job.completed"``, ``"job.failed"``,
+            ``"detached.completed"``, ``"detached.failed"``, ``"detached.log_push"``.
+        final: ``True`` if no more events will follow for this ID.
+        timestamp: ISO 8601 timestamp of when the webhook was generated.
+        result: Structured result dict with ``type`` (string), ``retval`` (list), ``error``.
+        device: Device connection info (``host``, ``device_type``).
+    """
+
+    id: str = Field(..., description="Job ID or Task ID")
+    status: str = Field(..., description="Job status: finished, failed, etc.")
+    event_type: str = Field(..., description="Event type: job.completed, detached.log_push, etc.")
+    final: bool = Field(..., description="True if no more events will follow for this ID")
+    timestamp: str = Field(..., description="ISO 8601 timestamp of webhook generation")
+    started_at: Optional[str] = Field(default=None, description="Job execution start time")
+    ended_at: Optional[str] = Field(default=None, description="Job execution end time")
+    duration: Optional[float] = Field(default=None, description="Execution duration in seconds")
+    result: Optional[dict] = Field(default=None, description="Structured result (type, retval, error)")
+    device: Optional[Dict[str, str]] = Field(default=None, description="Device info (host, device_type)")
+    task_id: Optional[str] = Field(default=None, description="Detached task ID")
+    device_name: Optional[str] = Field(default=None, description="Human-readable device name")
+    command: Optional[List[str]] = Field(default=None, description="List of executed commands")
+
+    model_config = ConfigDict(extra="allow")
+
+    @property
+    def ok(self) -> bool:
+        """True if the event indicates success."""
+        return self.event_type in ("job.completed", "detached.completed", "detached.log_push")
+
+    @property
+    def retval(self) -> list:
+        """Shortcut to result.retval (list of DriverExecutionResult dicts)."""
+        if self.result:
+            return self.result.get("retval") or []
+        return []
+
+    @property
+    def error(self) -> Optional[dict]:
+        """Shortcut to result.error dict (has 'type' and 'message' keys)."""
+        if self.result:
+            return self.result.get("error")
+        return None
+
+    def __repr__(self):
+        final_str = " FINAL" if self.final else ""
+        return f"WebhookEvent({self.event_type}{final_str} id={self.id})"

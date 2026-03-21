@@ -21,6 +21,7 @@ from .result import (
     DetachedTaskLog,
     JobProgress,
     Result,
+    WebhookEvent,
     WorkerInfo,
 )
 from .types import (
@@ -65,6 +66,7 @@ __all__ = [
     "WorkerInfo",
     "DetachedTaskInfo",
     "DetachedTaskLog",
+    "WebhookEvent",
     # Errors
     "NetPulseError",
     "AuthError",

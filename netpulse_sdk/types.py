@@ -166,6 +166,8 @@ class WebhookConfig(TypedDict, total=False):
     cookies: Dict[str, str]
     auth: tuple  # (Username, Password) for Basic Auth
     timeout: float
+    max_retries: int  # Maximum delivery retries on failure (0 disables retry, max 10)
+    retry_intervals: List[int]  # Delay in seconds between retries (e.g., [10, 30, 120])
 
 
 class CredentialConfig(TypedDict, total=False):
