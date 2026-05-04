@@ -43,6 +43,19 @@ class TestNetPulseClient:
         call_args = mock_client._http.post.call_args[1]
         assert call_args["json"]["command"] == ["show version"]
         assert call_args["json"]["connection_args"]["host"] == "10.0.0.1"
+        assert "audit_mode" not in call_args["json"]
+
+    def test_run_exec_mode_with_audit_mode(self, mock_client, sample_job_data):
+        mock_client._http.post.return_value = sample_job_data
+
+        mock_client.run(
+            devices="10.0.0.1",
+            command="show version",
+            audit_mode="metadata",
+        )
+
+        call_args = mock_client._http.post.call_args[1]
+        assert call_args["json"]["audit_mode"] == "metadata"
 
     def test_run_bulk_mode(self, mock_client):
         # Mock bulk execution response
@@ -61,6 +74,20 @@ class TestNetPulseClient:
         assert group.jobs[0].id == "j1"
         assert group.jobs[1].id == "j2"
         mock_client._http.post.assert_called_with("/device/bulk", json=ANY)
+
+    def test_run_bulk_mode_with_audit_mode(self, mock_client):
+        mock_client._http.post.return_value = {
+            "succeeded": [
+                {"id": "j1", "status": "queued", "connection_args": {"host": "d1"}},
+                {"id": "j2", "status": "queued", "connection_args": {"host": "d2"}},
+            ],
+            "failed": [],
+        }
+
+        mock_client.run(devices=["d1", "d2"], command="show clock", audit_mode="none")
+
+        call_args = mock_client._http.post.call_args[1]
+        assert call_args["json"]["audit_mode"] == "none"
 
     def test_get_job(self, mock_client, sample_job_data):
         mock_client._http.get.return_value = sample_job_data
@@ -104,6 +131,14 @@ class TestNetPulseClient:
         """collect() without command or file_transfer raises ValueError"""
         with pytest.raises(ValueError, match="requires a command"):
             mock_client.collect("10.0.0.1")
+
+    def test_collect_with_audit_mode(self, mock_client, sample_job_data):
+        mock_client._http.post.return_value = sample_job_data
+
+        mock_client.collect("10.0.0.1", command="show version", audit_mode="full")
+
+        call_args = mock_client._http.post.call_args[1]
+        assert call_args["json"]["audit_mode"] == "full"
 
     def test_cancel_job(self, mock_client):
         mock_client._http.delete.return_value = None

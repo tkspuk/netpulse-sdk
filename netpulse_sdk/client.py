@@ -303,6 +303,7 @@ class NetPulseClient:
         local_upload_file: Optional[str] = None,
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
+        audit_mode: Optional[Literal["full", "metadata", "none"]] = None,
         callback: Optional[Callable] = None,
         auto_retry: bool = True,
     ) -> Union[Job, JobGroup]:
@@ -315,6 +316,8 @@ class NetPulseClient:
             auto_retry: Automatically retry devices that fail bulk submission once (default True).
                 Set to False to disable silent retries. Retried devices are recorded in
                 JobGroup.retried_devices.
+            audit_mode: Mongo audit storage mode. full stores the complete result, metadata stores
+                request/job metadata only, none skips Mongo audit logging.
 
         Returns:
             Job or JobGroup instance
@@ -356,6 +359,7 @@ class NetPulseClient:
             local_upload_file=local_upload_file,
             enable_mode=enable_mode if enable_mode is not None else self.enable_mode,
             save=save if save is not None else self.save,
+            audit_mode=audit_mode,
             return_group=was_list or mode == "bulk",
             auto_retry=auto_retry,
         )
@@ -387,6 +391,7 @@ class NetPulseClient:
         local_upload_file: Optional[str] = None,
         enable_mode: bool = False,
         save: bool = False,
+        audit_mode: Optional[Literal["full", "metadata", "none"]] = None,
         callback: Optional[Callable] = None,
     ) -> Union[Job, JobGroup]:
         """Information Gathering and Audit (API Mode: command)
@@ -414,6 +419,8 @@ class NetPulseClient:
             local_upload_file: Local file to upload
             enable_mode: Default False. Enter privileged mode before execution.
             save: Default False. Save configuration after execution.
+            audit_mode: Mongo audit storage mode. full stores the complete result, metadata stores
+                request/job metadata only, none skips Mongo audit logging.
             callback: Progress callback function(progress_obj)
         """
         # Enforce read-only constraints
@@ -449,6 +456,7 @@ class NetPulseClient:
             local_upload_file=local_upload_file,
             enable_mode=enable_mode,
             save=save,
+            audit_mode=audit_mode,
             return_group=was_list,
         )
 
@@ -481,6 +489,7 @@ class NetPulseClient:
         local_upload_file: Optional[str] = None,
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
+        audit_mode: Optional[Literal["full", "metadata", "none"]] = None,
         callback: Optional[Callable] = None,
         return_group: bool = False,
         auto_retry: bool = True,
@@ -567,6 +576,7 @@ class NetPulseClient:
                 staged_file_id=staged_file_id,
                 enable_mode=eff_enable_mode,
                 save=eff_save,
+                audit_mode=audit_mode,
                 callback=callback,
                 auto_retry=auto_retry,
             )
@@ -594,6 +604,7 @@ class NetPulseClient:
                 staged_file_id=staged_file_id,
                 enable_mode=eff_enable_mode,
                 save=eff_save,
+                audit_mode=audit_mode,
                 local_upload_file=local_upload_file,
                 callback=callback,
             )
@@ -1030,6 +1041,7 @@ class NetPulseClient:
         local_upload_file: Optional[str] = None,
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
+        audit_mode: Optional[Literal["full", "metadata", "none"]] = None,
         callback: Optional[Callable] = None,
     ) -> Job:
         """Call POST /device/exec
@@ -1063,6 +1075,7 @@ class NetPulseClient:
             staged_file_id=staged_file_id,
             enable_mode=enable_mode,
             save=save,
+            audit_mode=audit_mode,
         )
 
         if local_upload_file is not None:
@@ -1147,6 +1160,7 @@ class NetPulseClient:
         staged_file_id: Optional[str] = None,
         enable_mode: Optional[bool] = None,
         save: Optional[bool] = None,
+        audit_mode: Optional[Literal["full", "metadata", "none"]] = None,
         callback: Optional[Callable] = None,
         auto_retry: bool = True,
     ) -> JobGroup:
@@ -1188,6 +1202,7 @@ class NetPulseClient:
             staged_file_id=staged_file_id,
             enable_mode=enable_mode,
             save=save,
+            audit_mode=audit_mode,
         )
 
         log.debug(f"Calling bulk API for {len(normalized_devices)} devices")
