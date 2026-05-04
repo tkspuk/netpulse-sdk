@@ -262,8 +262,12 @@ class WebhookEvent(BaseModel):
     started_at: Optional[str] = Field(default=None, description="Job execution start time")
     ended_at: Optional[str] = Field(default=None, description="Job execution end time")
     duration: Optional[float] = Field(default=None, description="Execution duration in seconds")
-    result: Optional[dict] = Field(default=None, description="Structured result (type, retval, error)")
-    device: Optional[Dict[str, str]] = Field(default=None, description="Device info (host, device_type)")
+    result: Optional[dict] = Field(
+        default=None, description="Structured result (type, retval, error)"
+    )
+    device: Optional[Dict[str, str]] = Field(
+        default=None, description="Device info (host, device_type)"
+    )
     task_id: Optional[str] = Field(default=None, description="Detached task ID")
     device_name: Optional[str] = Field(default=None, description="Human-readable device name")
     command: Optional[List[str]] = Field(default=None, description="List of executed commands")

@@ -2,10 +2,10 @@
 
 | SDK Version | NetPulse API Version | Status |
 |-------------|----------------------|--------|
-| **0.3.x**   | **0.4.0+**           | Recommended |
-| 0.2.x       | 0.3.x                | Legacy |
+| **0.4.x**   | **0.4.0+**           | Recommended |
+| 0.3.x       | 0.4.0                | Legacy |
 
-> **IMPORTANT**: This version of the SDK (0.3.x) is strictly aligned with NetPulse API 0.4.0. It uses `stdout`, `stderr`, and `ok` as standard fields.
+> **IMPORTANT**: This version of the SDK (0.4.x) is strictly aligned with NetPulse API 0.4.0+. It supports advanced features like per-request MongoDB audit modes.
 
 ## Installation
 
